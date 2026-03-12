@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Model Comparison — Pixel Art Characters</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0c0c1a;
+    color: #ccc;
+    font-family: monospace;
+    padding: 30px;
+  }
+  h1 {
+    text-align: center;
+    color: #8888dd;
+    font-size: 22px;
+    letter-spacing: 4px;
+    margin-bottom: 10px;
+  }
+  .subtitle {
+    text-align: center;
+    color: #556;
+    font-size: 12px;
+    margin-bottom: 30px;
+  }
+  .model-row {
+    display: flex;
+    align-items: flex-start;
+    margin-bottom: 30px;
+    border-bottom: 1px solid #1a1a2e;
+    padding-bottom: 20px;
+  }
+  .model-label {
+    width: 160px;
+    flex-shrink: 0;
+    padding-top: 20px;
+  }
+  .model-label h3 {
+    color: #aab;
+    font-size: 13px;
+    margin-bottom: 4px;
+  }
+  .model-label .provider {
+    color: #556;
+    font-size: 11px;
+  }
+  .characters {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+  .char-card {
+    text-align: center;
+  }
+  .char-card .label {
+    color: #667;
+    font-size: 10px;
+    margin-bottom: 6px;
+    letter-spacing: 2px;
+  }
+  .pair {
+    display: flex;
+    gap: 10px;
+    align-items: flex-end;
+  }
+  .pair canvas {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    border: 1px solid #1a1a2e;
+  }
+  .pair .raw {
+    width: 120px;
+    height: 120px;
+    object-fit: contain;
+    border: 1px solid #1a1a2e;
+    border-radius: 2px;
+  }
+  .size-label {
+    color: #445;
+    font-size: 9px;
+    text-align: center;
+    margin-top: 2px;
+  }
+</style>
+</head>
+<body>
+<h1>MODEL COMPARISON</h1>
+<div class="subtitle">SAME PROMPT, EVERY MODEL — RAW (120px) → PIXELATED (64px scaled 3x)</div>
+
+<div id="grid"></div>
+
+<script>
+const MODELS = [
+  { key: 'nano-banana-2', name: 'Nano Banana 2', provider: 'Gemini' },
+  { key: 'flux-2-max', name: 'Flux 2 Max', provider: 'Black Forest Labs' },
+  { key: 'flux-2-pro', name: 'Flux 2 Pro', provider: 'Black Forest Labs' },
+  { key: 'flux-kontext-max', name: 'Flux Kontext Max', provider: 'Black Forest Labs' },
+  { key: 'flux-kontext-pro', name: 'Flux Kontext Pro', provider: 'Black Forest Labs' },
+  { key: 'flux-pro-1.1', name: 'Flux Pro 1.1', provider: 'Black Forest Labs' },
+];
+
+const CHARS = ['knight', 'rogue'];
+const CHAR_LABELS = { knight: 'KNIGHT', rogue: 'ROGUE' };
+const PX_SIZE = 64;
+const SCALE = 3;
+const BLACK_THRESH = 22;
+
+function processAndDraw(img, canvas) {
+  const aspect = img.height / img.width;
+  const pw = PX_SIZE;
+  const ph = Math.round(PX_SIZE * aspect);
+
+  // Downsample
+  const sc = document.createElement('canvas');
+  sc.width = pw; sc.height = ph;
+  const sCtx = sc.getContext('2d');
+  sCtx.imageSmoothingEnabled = true;
+  sCtx.imageSmoothingQuality = 'medium';
+  sCtx.drawImage(img, 0, 0, pw, ph);
+
+  const imageData = sCtx.getImageData(0, 0, pw, ph);
+  const data = imageData.data;
+
+  // Flood-fill exterior black
+  const isBlack = (i) => data[i] < BLACK_THRESH && data[i+1] < BLACK_THRESH && data[i+2] < BLACK_THRESH;
+  const ext = new Uint8Array(pw * ph);
+  const queue = [];
+
+  for (let x = 0; x < pw; x++) {
+    if (isBlack(x * 4)) { ext[x] = 1; queue.push(x); }
+    const bi = (ph-1)*pw+x;
+    if (isBlack(bi * 4)) { ext[bi] = 1; queue.push(bi); }
+  }
+  for (let y = 1; y < ph - 1; y++) {
+    const li = y*pw, ri = y*pw+pw-1;
+    if (isBlack(li * 4)) { ext[li] = 1; queue.push(li); }
+    if (isBlack(ri * 4)) { ext[ri] = 1; queue.push(ri); }
+  }
+  let qi = 0;
+  while (qi < queue.length) {
+    const idx = queue[qi++];
+    const x = idx % pw, y = Math.floor(idx / pw);
+    for (const n of [y>0?idx-pw:-1, y<ph-1?idx+pw:-1, x>0?idx-1:-1, x<pw-1?idx+1:-1]) {
+      if (n >= 0 && !ext[n] && isBlack(n * 4)) { ext[n] = 1; queue.push(n); }
+    }
+  }
+
+  // Draw pixelated
+  canvas.width = pw * SCALE;
+  canvas.height = ph * SCALE;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  for (let y = 0; y < ph; y++) {
+    for (let x = 0; x < pw; x++) {
+      const i = (y * pw + x) * 4;
+      if (ext[y * pw + x] || data[i+3] < 20) continue;
+      ctx.fillStyle = `rgb(${data[i]},${data[i+1]},${data[i+2]})`;
+      ctx.fillRect(x * SCALE, y * SCALE, SCALE, SCALE);
+    }
+  }
+}
+
+const grid = document.getElementById('grid');
+
+MODELS.forEach(model => {
+  const row = document.createElement('div');
+  row.className = 'model-row';
+
+  const label = document.createElement('div');
+  label.className = 'model-label';
+  label.innerHTML = `<h3>${model.name}</h3><div class="provider">${model.provider}</div>`;
+  row.appendChild(label);
+
+  const chars = document.createElement('div');
+  chars.className = 'characters';
+
+  CHARS.forEach(ch => {
+    const card = document.createElement('div');
+    card.className = 'char-card';
+    card.innerHTML = `<div class="label">${CHAR_LABELS[ch]}</div>`;
+
+    const pair = document.createElement('div');
+    pair.className = 'pair';
+
+    // Raw thumbnail
+    const rawImg = document.createElement('img');
+    rawImg.className = 'raw';
+    rawImg.src = `${model.key}-${ch}.png?v=${Date.now()}`;
+
+    // Pixelated canvas
+    const cvs = document.createElement('canvas');
+
+    const fullImg = new Image();
+    fullImg.onload = () => processAndDraw(fullImg, cvs);
+    fullImg.src = rawImg.src;
+
+    const rawWrap = document.createElement('div');
+    rawWrap.appendChild(rawImg);
+    const rawLabel = document.createElement('div');
+    rawLabel.className = 'size-label';
+    rawLabel.textContent = 'RAW';
+    rawWrap.appendChild(rawLabel);
+
+    const pxWrap = document.createElement('div');
+    pxWrap.appendChild(cvs);
+    const pxLabel = document.createElement('div');
+    pxLabel.className = 'size-label';
+    pxLabel.textContent = 'PIXELATED';
+    pxWrap.appendChild(pxLabel);
+
+    pair.appendChild(rawWrap);
+    pair.appendChild(pxWrap);
+    card.appendChild(pair);
+    chars.appendChild(card);
+  });
+
+  row.appendChild(chars);
+  grid.appendChild(row);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Pixel Forest Map</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    overflow: hidden;
+    font-family: monospace;
+  }
+  canvas { image-rendering: pixelated; image-rendering: crisp-edges; }
+  .hud {
+    position: fixed;
+    top: 10px;
+    left: 10px;
+    color: #556;
+    font-size: 11px;
+    line-height: 1.6;
+    pointer-events: none;
+  }
+  .hud .warn { color: #a85; }
+  .hud .pass { color: #5a5; }
+  .hud .fail { color: #a55; }
+  .model-picker {
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .model-picker button {
+    background: #1a1a2e;
+    color: #889;
+    border: 1px solid #334;
+    padding: 4px 10px;
+    font-family: monospace;
+    font-size: 11px;
+    cursor: pointer;
+    border-radius: 3px;
+  }
+  .model-picker button.active {
+    background: #2a2a5e;
+    color: #aaf;
+    border-color: #55a;
+  }
+  .model-picker button:hover { background: #252545; }
+  .controls {
+    position: fixed;
+    bottom: 10px;
+    color: #445;
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-align: center;
+  }
+  .loading {
+    color: #5a6a9a;
+    font-size: 14px;
+    letter-spacing: 3px;
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+  }
+</style>
+</head>
+<body>
+<div class="loading" id="loadMsg">LOADING ASSETS...</div>
+<canvas id="c"></canvas>
+<div class="hud" id="hud"></div>
+<div class="model-picker" id="picker"></div>
+<div class="controls">ARROW KEYS: MOVE &bull; 1-4: SWITCH MODEL</div>
+
+<script>
+// ─── CONFIG ───
+const PX = 48;           // downsample resolution for assets
+const CHAR_PX = 64;      // character resolution
+const TILE = 5;           // pixel scale
+const MAP_W = 960;        // canvas width
+const MAP_H = 640;        // canvas height
+const BLACK_THRESH = 22;
+const WALK_FPS = 6;
+
+const MODELS = ['nano-banana-2', 'flux-2-max', 'flux-2-pro', 'flux-pro-1.1'];
+const ASSETS = ['oak-tree', 'pine-tree', 'mushroom-cluster', 'flower-bush', 'fern-plant', 'glowing-fungus'];
+
+// Map layout: scatter assets across the scene
+// Each placement: { asset, x, y, scale } — x,y = bottom-center in canvas coords
+const PLACEMENTS = [
+  // Big trees in back
+  { asset: 'oak-tree',          x: 120,  y: 260, scale: 4.5 },
+  { asset: 'pine-tree',         x: 340,  y: 240, scale: 5.0 },
+  { asset: 'oak-tree',          x: 600,  y: 250, scale: 4.0 },
+  { asset: 'pine-tree',         x: 820,  y: 235, scale: 5.5 },
+  // Mid trees
+  { asset: 'oak-tree',          x: 50,   y: 370, scale: 3.5 },
+  { asset: 'pine-tree',         x: 480,  y: 360, scale: 4.0 },
+  { asset: 'oak-tree',          x: 750,  y: 380, scale: 3.5 },
+  // Mushrooms and flowers scattered
+  { asset: 'mushroom-cluster',  x: 200,  y: 400, scale: 2.5 },
+  { asset: 'flower-bush',       x: 380,  y: 430, scale: 2.0 },
+  { asset: 'glowing-fungus',    x: 550,  y: 410, scale: 2.5 },
+  { asset: 'fern-plant',        x: 700,  y: 440, scale: 2.0 },
+  { asset: 'mushroom-cluster',  x: 870,  y: 420, scale: 2.0 },
+  // Foreground detail
+  { asset: 'fern-plant',        x: 100,  y: 510, scale: 2.5 },
+  { asset: 'flower-bush',       x: 260,  y: 530, scale: 2.5 },
+  { asset: 'glowing-fungus',    x: 430,  y: 520, scale: 2.0 },
+  { asset: 'mushroom-cluster',  x: 620,  y: 540, scale: 2.5 },
+  { asset: 'fern-plant',        x: 800,  y: 525, scale: 2.0 },
+  { asset: 'flower-bush',       x: 910,  y: 510, scale: 2.0 },
+];
+
+// ─── GUARDRAILS: Background Validation ───
+const validationResults = {};
+
+function validateBackground(imageData, label) {
+  const { data, width, height } = imageData;
+  const results = { label, levels: [] };
+
+  // Level 1: Corner check
+  const corners = [
+    0, width - 1,
+    (height - 1) * width, (height - 1) * width + width - 1
+  ];
+  let cornerBlack = 0;
+  for (const ci of corners) {
+    const p = ci * 4;
+    if (data[p] <= BLACK_THRESH && data[p+1] <= BLACK_THRESH && data[p+2] <= BLACK_THRESH) {
+      cornerBlack++;
+    }
+  }
+  const l1Pass = cornerBlack === 4;
+  results.levels.push({ level: 1, name: 'corners', pass: l1Pass, detail: `${cornerBlack}/4 black` });
+
+  // Level 2: Edge scan — sample every 4th pixel on all edges
+  let edgeTotal = 0, edgeBlack = 0;
+  for (let x = 0; x < width; x += 4) {
+    for (const y of [0, height - 1]) {
+      const p = (y * width + x) * 4;
+      edgeTotal++;
+      if (data[p] <= BLACK_THRESH && data[p+1] <= BLACK_THRESH && data[p+2] <= BLACK_THRESH) edgeBlack++;
+    }
+  }
+  for (let y = 0; y < height; y += 4) {
+    for (const x of [0, width - 1]) {
+      const p = (y * width + x) * 4;
+      edgeTotal++;
+      if (data[p] <= BLACK_THRESH && data[p+1] <= BLACK_THRESH && data[p+2] <= BLACK_THRESH) edgeBlack++;
+    }
+  }
+  const edgePct = edgeBlack / edgeTotal;
+  const l2Pass = edgePct > 0.95;
+  const l2Warn = edgePct > 0.5;
+  results.levels.push({ level: 2, name: 'edges', pass: l2Pass, warn: l2Warn, detail: `${Math.round(edgePct * 100)}% black` });
+
+  // Level 3: Checkerboard detection (8x8 patch from top-left)
+  let even = 0, odd = 0, evenN = 0, oddN = 0;
+  for (let y = 0; y < Math.min(8, height); y++) {
+    for (let x = 0; x < Math.min(8, width); x++) {
+      const p = (y * width + x) * 4;
+      const bright = (data[p] + data[p+1] + data[p+2]) / 3;
+      if ((x + y) % 2 === 0) { even += bright; evenN++; }
+      else { odd += bright; oddN++; }
+    }
+  }
+  const checkerDiff = Math.abs((even / evenN) - (odd / oddN));
+  const isChecker = checkerDiff > 40;
+  results.levels.push({ level: 3, name: 'checker', pass: !isChecker, detail: `diff=${Math.round(checkerDiff)}` });
+
+  results.passed = l1Pass && l2Pass && !isChecker;
+  results.fixable = !results.passed;
+  return results;
+}
+
+// ─── Flood-fill background removal ───
+function floodFillRemove(data, w, h) {
+  const isB = (i) => data[i] <= BLACK_THRESH && data[i+1] <= BLACK_THRESH && data[i+2] <= BLACK_THRESH;
+  const ext = new Uint8Array(w * h);
+  const q = [];
+
+  for (let x = 0; x < w; x++) {
+    if (isB(x * 4)) { ext[x] = 1; q.push(x); }
+    const b = (h - 1) * w + x;
+    if (isB(b * 4)) { ext[b] = 1; q.push(b); }
+  }
+  for (let y = 1; y < h - 1; y++) {
+    const l = y * w, r = y * w + w - 1;
+    if (isB(l * 4)) { ext[l] = 1; q.push(l); }
+    if (isB(r * 4)) { ext[r] = 1; q.push(r); }
+  }
+  let qi = 0;
+  while (qi < q.length) {
+    const idx = q[qi++], x = idx % w, y = Math.floor(idx / w);
+    for (const n of [y > 0 ? idx - w : -1, y < h - 1 ? idx + w : -1, x > 0 ? idx - 1 : -1, x < w - 1 ? idx + 1 : -1]) {
+      if (n >= 0 && !ext[n] && isB(n * 4)) { ext[n] = 1; q.push(n); }
+    }
+  }
+  return ext;
+}
+
+// ─── Fallback: flood-fill from edges using dominant edge color ───
+function floodFillDominantColor(data, w, h) {
+  // Sample edge pixels to find dominant non-black color
+  const colorCounts = {};
+  for (let x = 0; x < w; x++) {
+    for (const y of [0, h - 1]) {
+      const p = (y * w + x) * 4;
+      const key = `${data[p]>>4},${data[p+1]>>4},${data[p+2]>>4}`;
+      colorCounts[key] = (colorCounts[key] || 0) + 1;
+    }
+  }
+  for (let y = 0; y < h; y++) {
+    for (const x of [0, w - 1]) {
+      const p = (y * w + x) * 4;
+      const key = `${data[p]>>4},${data[p+1]>>4},${data[p+2]>>4}`;
+      colorCounts[key] = (colorCounts[key] || 0) + 1;
+    }
+  }
+
+  // Find most common edge color
+  let maxCount = 0, dominant = null;
+  for (const [key, count] of Object.entries(colorCounts)) {
+    if (count > maxCount) { maxCount = count; dominant = key; }
+  }
+
+  if (!dominant) return new Uint8Array(w * h);
+
+  const [dr, dg, db] = dominant.split(',').map(v => parseInt(v) << 4);
+  const tolerance = 40;
+
+  const matches = (i) => {
+    return Math.abs(data[i] - dr) < tolerance &&
+           Math.abs(data[i+1] - dg) < tolerance &&
+           Math.abs(data[i+2] - db) < tolerance;
+  };
+
+  const ext = new Uint8Array(w * h);
+  const q = [];
+
+  for (let x = 0; x < w; x++) {
+    if (matches(x * 4)) { ext[x] = 1; q.push(x); }
+    const b = (h - 1) * w + x;
+    if (matches(b * 4)) { ext[b] = 1; q.push(b); }
+  }
+  for (let y = 1; y < h - 1; y++) {
+    const l = y * w, r = y * w + w - 1;
+    if (matches(l * 4)) { ext[l] = 1; q.push(l); }
+    if (matches(r * 4)) { ext[r] = 1; q.push(r); }
+  }
+  let qi = 0;
+  while (qi < q.length) {
+    const idx = q[qi++], x = idx % w, y = Math.floor(idx / w);
+    for (const n of [y > 0 ? idx - w : -1, y < h - 1 ? idx + w : -1, x > 0 ? idx - 1 : -1, x < w - 1 ? idx + 1 : -1]) {
+      if (n >= 0 && !ext[n] && matches(n * 4)) { ext[n] = 1; q.push(n); }
+    }
+  }
+  return ext;
+}
+
+// ─── Process an image into pixel data with guardrails ───
+function processAsset(img, label) {
+  const aspect = img.height / img.width;
+  const pw = PX, ph = Math.round(PX * aspect);
+
+  const sc = document.createElement('canvas');
+  sc.width = pw; sc.height = ph;
+  const sCtx = sc.getContext('2d');
+  sCtx.imageSmoothingEnabled = true;
+  sCtx.imageSmoothingQuality = 'medium';
+  sCtx.drawImage(img, 0, 0, pw, ph);
+
+  const id = sCtx.getImageData(0, 0, pw, ph);
+  const d = id.data;
+
+  // ── GUARDRAIL: Validate background before processing ──
+  const validation = validateBackground(id, label);
+  validationResults[label] = validation;
+
+  let ext;
+  if (validation.passed) {
+    // Standard black flood-fill
+    ext = floodFillRemove(d, pw, ph);
+  } else {
+    // Guardrail fallback: try dominant-color flood-fill
+    ext = floodFillDominantColor(d, pw, ph);
+    // If that didn't mark enough exterior, fall back to black flood-fill anyway
+    let extCount = 0;
+    for (let i = 0; i < ext.length; i++) if (ext[i]) extCount++;
+    if (extCount < pw * ph * 0.1) {
+      ext = floodFillRemove(d, pw, ph);
+    }
+    validation.fixed = true;
+  }
+
+  // Find bounds
+  let minX = pw, maxX = 0, minY = ph, maxY = 0;
+  for (let y = 0; y < ph; y++) {
+    for (let x = 0; x < pw; x++) {
+      const i = (y * pw + x) * 4;
+      if (!ext[y * pw + x] && d[i + 3] >= 20) {
+        minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+        minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+      }
+    }
+  }
+
+  return { d, ext, pw, ph, minX, maxX, minY, maxY, validation };
+}
+
+// ─── Process character sprite ───
+function processChar(img) {
+  const aspect = img.height / img.width;
+  const pw = CHAR_PX, ph = Math.round(CHAR_PX * aspect);
+
+  const sc = document.createElement('canvas');
+  sc.width = pw; sc.height = ph;
+  const sCtx = sc.getContext('2d');
+  sCtx.imageSmoothingEnabled = true;
+  sCtx.imageSmoothingQuality = 'medium';
+  sCtx.drawImage(img, 0, 0, pw, ph);
+
+  const id = sCtx.getImageData(0, 0, pw, ph);
+  const d = id.data;
+  const ext = floodFillRemove(d, pw, ph);
+
+  let minX = pw, maxX = 0, minY = ph, maxY = 0;
+  for (let y = 0; y < ph; y++) {
+    for (let x = 0; x < pw; x++) {
+      const i = (y * pw + x) * 4;
+      if (!ext[y * pw + x] && d[i + 3] >= 20) {
+        minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+        minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+      }
+    }
+  }
+
+  return { d, ext, pw, ph, minX, maxX, minY, maxY };
+}
+
+// ─── Draw a processed sprite onto main canvas ───
+function drawSprite(ctx, sprite, cx, bottomY, scale) {
+  const { d, ext, pw, ph, minX, maxX, minY, maxY } = sprite;
+  if (minX > maxX) return; // empty
+  const charW = maxX - minX + 1;
+  const charH = maxY - minY + 1;
+  const drawLeft = cx - (charW * scale) / 2;
+  const drawTop = bottomY - charH * scale;
+
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      const i = (y * pw + x) * 4;
+      if (ext[y * pw + x] || d[i + 3] < 20) continue;
+      const sx = drawLeft + (x - minX) * scale;
+      const sy = drawTop + (y - minY) * scale;
+      ctx.fillStyle = `rgba(${d[i]},${d[i+1]},${d[i+2]},${d[i+3]/255})`;
+      ctx.fillRect(Math.round(sx), Math.round(sy), Math.ceil(scale), Math.ceil(scale));
+    }
+  }
+}
+
+// ─── STATE ───
+let currentModel = 1; // index into MODELS (start with flux-2-max)
+const assetCache = {}; // model -> asset -> processed data
+const charSprites = { down: {}, up: {}, left: {}, right: {} };
+let charDir = 'down', charWalking = false, charFrame = 0, walkTimer = 0;
+let charX = MAP_W / 2, charY = MAP_H / 2 + 40;
+const keysDown = {};
+const SPEED = 120; // px/sec
+
+let loadCount = 0, totalLoads = 0;
+let ready = false;
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = MAP_W;
+canvas.height = MAP_H;
+
+// ─── Load assets for all models ───
+function loadAssets() {
+  // Count total
+  totalLoads = MODELS.length * ASSETS.length; // nature assets
+  totalLoads += 4; // character idle (down, up, left, right)
+  totalLoads += 12; // character walk (3 per direction)
+
+  MODELS.forEach(model => {
+    assetCache[model] = {};
+    ASSETS.forEach(asset => {
+      const img = new Image();
+      img.onload = () => {
+        const label = `${model}/${asset}`;
+        assetCache[model][asset] = processAsset(img, label);
+        onLoad();
+      };
+      img.onerror = () => onLoad();
+      img.src = `nature-assets/${model}-${asset}.png?v=${Date.now()}`;
+    });
+  });
+
+  // Character sprites
+  const CHAR_FILES = {
+    down:  { idle: 'pixel-wizard-gen.png',   walk: ['pixel-wizard-down-walk1.png','pixel-wizard-down-walk2.png','pixel-wizard-down-walk3.png'] },
+    up:    { idle: 'pixel-wizard-back.png',  walk: ['pixel-wizard-up-walk1.png','pixel-wizard-up-walk2.png','pixel-wizard-up-walk3.png'] },
+    left:  { idle: 'pixel-wizard-left.png',  walk: ['pixel-wizard-left-walk1.png','pixel-wizard-left-walk2.png','pixel-wizard-left-walk3.png'] },
+    right: { idle: 'pixel-wizard-right.png', walk: ['pixel-wizard-right-walk1.png','pixel-wizard-right-walk2.png','pixel-wizard-right-walk3.png'] },
+  };
+
+  for (const [dir, files] of Object.entries(CHAR_FILES)) {
+    charSprites[dir].walk = [null, null, null];
+
+    const idleImg = new Image();
+    idleImg.onload = () => { charSprites[dir].idle = processChar(idleImg); onLoad(); };
+    idleImg.onerror = () => onLoad();
+    idleImg.src = files.idle + '?v=' + Date.now();
+
+    files.walk.forEach((f, i) => {
+      const wImg = new Image();
+      wImg.onload = () => { charSprites[dir].walk[i] = processChar(wImg); onLoad(); };
+      wImg.onerror = () => onLoad();
+      wImg.src = f + '?v=' + Date.now();
+    });
+  }
+}
+
+// Fixed target character height in canvas pixels
+const CHAR_TARGET_H = 160;
+
+function onLoad() {
+  loadCount++;
+  document.getElementById('loadMsg').textContent = `LOADING ASSETS... ${loadCount}/${totalLoads}`;
+  if (loadCount >= totalLoads) {
+    document.getElementById('loadMsg').style.display = 'none';
+
+    // Compute per-sprite scale so every sprite renders at CHAR_TARGET_H
+    for (const dir of ['down', 'up', 'left', 'right']) {
+      const s = charSprites[dir].idle;
+      if (s) {
+        const h = s.maxY - s.minY + 1;
+        s._scale = h > 0 ? CHAR_TARGET_H / h : 3.0;
+      }
+      for (let i = 0; i < 3; i++) {
+        const w = charSprites[dir].walk[i];
+        if (w) {
+          const h = w.maxY - w.minY + 1;
+          w._scale = h > 0 ? CHAR_TARGET_H / h : 3.0;
+        }
+      }
+    }
+
+    ready = true;
+    updateHUD();
+    buildPicker();
+  }
+}
+
+// ─── HUD: show validation results ───
+function updateHUD() {
+  const model = MODELS[currentModel];
+  let html = `<b style="color:#889">MODEL: ${model}</b><br>`;
+  html += `<br><b>BG VALIDATION:</b><br>`;
+
+  for (const asset of ASSETS) {
+    const key = `${model}/${asset}`;
+    const v = validationResults[key];
+    if (!v) { html += `<span class="warn">${asset}: no data</span><br>`; continue; }
+
+    const cls = v.passed ? 'pass' : (v.fixed ? 'warn' : 'fail');
+    const icon = v.passed ? 'PASS' : (v.fixed ? 'FIXED' : 'FAIL');
+    const details = v.levels.map(l => `L${l.level}:${l.detail}`).join(' ');
+    html += `<span class="${cls}">${icon} ${asset} [${details}]</span><br>`;
+  }
+
+  document.getElementById('hud').innerHTML = html;
+}
+
+// ─── Model picker ───
+function buildPicker() {
+  const picker = document.getElementById('picker');
+  picker.innerHTML = '';
+  MODELS.forEach((m, i) => {
+    const btn = document.createElement('button');
+    btn.textContent = `[${i + 1}] ${m}`;
+    btn.className = i === currentModel ? 'active' : '';
+    btn.onclick = () => { currentModel = i; updateHUD(); buildPicker(); };
+    picker.appendChild(btn);
+  });
+}
+
+// ─── Input ───
+document.addEventListener('keydown', (e) => {
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) {
+    e.preventDefault();
+    const dirMap = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
+    charDir = dirMap[e.key];
+    keysDown[e.key] = true;
+  }
+  if (e.key >= '1' && e.key <= '4') {
+    currentModel = parseInt(e.key) - 1;
+    updateHUD();
+    buildPicker();
+  }
+});
+document.addEventListener('keyup', (e) => { delete keysDown[e.key]; });
+
+// ─── Stars ───
+const stars = Array.from({length: 80}, () => ({
+  x: Math.random() * MAP_W,
+  y: Math.random() * MAP_H * 0.4,
+  size: Math.random() * 1.5 + 0.3,
+  speed: Math.random() * 2 + 0.5,
+  bright: Math.random(),
+}));
+
+// ─── Main loop ───
+let lastTime = 0;
+
+function animate(ts) {
+  requestAnimationFrame(animate);
+  if (!ready) return;
+
+  const dt = lastTime ? (ts - lastTime) / 1000 : 0;
+  lastTime = ts;
+  const time = ts / 1000;
+
+  // Movement
+  const anyArrow = keysDown['ArrowUp'] || keysDown['ArrowDown'] || keysDown['ArrowLeft'] || keysDown['ArrowRight'];
+  if (anyArrow) {
+    charWalking = true;
+    walkTimer += dt;
+    if (walkTimer >= 1 / WALK_FPS) { walkTimer -= 1 / WALK_FPS; charFrame = (charFrame + 1) % 3; }
+    if (keysDown['ArrowLeft']) charX -= SPEED * dt;
+    if (keysDown['ArrowRight']) charX += SPEED * dt;
+    if (keysDown['ArrowUp']) charY -= SPEED * dt;
+    if (keysDown['ArrowDown']) charY += SPEED * dt;
+    charX = Math.max(30, Math.min(MAP_W - 30, charX));
+    charY = Math.max(100, Math.min(MAP_H - 20, charY));
+  } else {
+    charWalking = false;
+    walkTimer = 0;
+    charFrame = 0;
+  }
+
+  // ─── DRAW ───
+  // Sky gradient
+  const bg = ctx.createLinearGradient(0, 0, 0, MAP_H);
+  bg.addColorStop(0, '#030310');
+  bg.addColorStop(0.3, '#080820');
+  bg.addColorStop(0.5, '#0c1428');
+  bg.addColorStop(0.7, '#0a1a18');
+  bg.addColorStop(1, '#081208');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, MAP_W, MAP_H);
+
+  // Stars
+  stars.forEach(s => {
+    const tw = 0.2 + 0.8 * (0.5 + 0.5 * Math.sin(time * s.speed + s.bright * 8));
+    ctx.fillStyle = `rgba(160,170,255,${tw * 0.4})`;
+    ctx.fillRect(Math.floor(s.x), Math.floor(s.y), Math.ceil(s.size), Math.ceil(s.size));
+  });
+
+  // Ground
+  ctx.fillStyle = '#0a1a0a';
+  ctx.fillRect(0, MAP_H * 0.55, MAP_W, MAP_H * 0.45);
+
+  // Ground texture (subtle horizontal lines)
+  for (let y = Math.floor(MAP_H * 0.55); y < MAP_H; y += 8) {
+    const a = 0.02 + 0.02 * Math.sin(y * 0.3);
+    ctx.fillStyle = `rgba(20,60,20,${a})`;
+    ctx.fillRect(0, y, MAP_W, 2);
+  }
+
+  // Collect all drawable things and sort by Y (painter's algorithm)
+  const model = MODELS[currentModel];
+  const drawables = [];
+
+  PLACEMENTS.forEach(p => {
+    const sprite = assetCache[model]?.[p.asset];
+    if (!sprite) return;
+    drawables.push({ type: 'asset', sprite, cx: p.x, by: p.y, scale: p.scale });
+  });
+
+  // Character
+  let charSprite;
+  if (charWalking && charSprites[charDir].walk[charFrame]) {
+    charSprite = charSprites[charDir].walk[charFrame];
+  } else {
+    charSprite = charSprites[charDir].idle;
+  }
+  if (charSprite) {
+    drawables.push({ type: 'char', sprite: charSprite, cx: charX, by: charY, scale: charSprite._scale || 3.0 });
+  }
+
+  // Sort by bottom Y
+  drawables.sort((a, b) => a.by - b.by);
+
+  // Draw all
+  drawables.forEach(item => {
+    drawSprite(ctx, item.sprite, item.cx, item.by, item.scale);
+
+    // Glowing fungus effect
+    if (item.type === 'asset') {
+      const placement = PLACEMENTS.find(p => p.x === item.cx && p.y === item.by);
+      if (placement && placement.asset === 'glowing-fungus') {
+        const pulse = 0.3 + 0.3 * Math.sin(time * 2 + item.cx * 0.01);
+        const glow = ctx.createRadialGradient(item.cx, item.by - 20, 0, item.cx, item.by - 20, 40);
+        glow.addColorStop(0, `rgba(80,255,120,${pulse * 0.15})`);
+        glow.addColorStop(0.5, `rgba(40,200,80,${pulse * 0.06})`);
+        glow.addColorStop(1, 'rgba(20,100,40,0)');
+        ctx.fillStyle = glow;
+        ctx.fillRect(item.cx - 40, item.by - 60, 80, 80);
+      }
+    }
+
+    // Character staff glow
+    if (item.type === 'char') {
+      const pulse = 0.5 + 0.5 * Math.sin(time * 2.5);
+      const glow = ctx.createRadialGradient(charX, charY - 60, 0, charX, charY - 60, 30);
+      glow.addColorStop(0, `rgba(80,140,255,${pulse * 0.12})`);
+      glow.addColorStop(0.5, `rgba(60,100,220,${pulse * 0.05})`);
+      glow.addColorStop(1, 'rgba(40,60,180,0)');
+      ctx.fillStyle = glow;
+      ctx.fillRect(charX - 30, charY - 90, 60, 60);
+    }
+  });
+}
+
+// ─── GO ───
+// URL param for model selection (before loading starts)
+const _urlModel = new URLSearchParams(window.location.search).get('model');
+if (_urlModel !== null) {
+  const _mi = parseInt(_urlModel);
+  if (_mi >= 0 && _mi < MODELS.length) currentModel = _mi;
+}
+loadAssets();
+requestAnimationFrame(animate);
+</script>
+</body>
+</html>

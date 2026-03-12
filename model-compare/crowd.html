@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Character Crowd</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #000; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+  canvas { image-rendering: pixelated; image-rendering: crisp-edges; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const PX = 64;
+const SCALE = 5;
+const BT = 22;
+
+// All characters except nano-banana-2 knight (white bg) and flux-kontext-pro (colored bg)
+const SPRITES = [
+  { src: 'nano-banana-2-rogue.png', x: 0 },
+  { src: 'flux-2-max-knight.png', x: 1 },
+  { src: 'flux-2-max-rogue.png', x: 2 },
+  { src: 'flux-2-pro-knight.png', x: 3 },
+  { src: 'flux-2-pro-rogue.png', x: 4 },
+  { src: 'flux-kontext-max-knight.png', x: 5 },
+  { src: 'flux-kontext-max-rogue.png', x: 6 },
+  { src: 'flux-pro-1.1-knight.png', x: 7 },
+  { src: 'flux-pro-1.1-rogue.png', x: 8 },
+];
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+// Process each image into a pixel grid
+function process(img) {
+  const aspect = img.height / img.width;
+  const pw = PX, ph = Math.round(PX * aspect);
+  const sc = document.createElement('canvas');
+  sc.width = pw; sc.height = ph;
+  const s = sc.getContext('2d');
+  s.imageSmoothingEnabled = true;
+  s.imageSmoothingQuality = 'medium';
+  s.drawImage(img, 0, 0, pw, ph);
+  const id = s.getImageData(0, 0, pw, ph);
+  const d = id.data;
+
+  const isB = (i) => d[i] < BT && d[i+1] < BT && d[i+2] < BT;
+  const ext = new Uint8Array(pw * ph);
+  const q = [];
+  for (let x = 0; x < pw; x++) {
+    if (isB(x*4)) { ext[x]=1; q.push(x); }
+    const b=(ph-1)*pw+x; if (isB(b*4)) { ext[b]=1; q.push(b); }
+  }
+  for (let y = 1; y < ph-1; y++) {
+    const l=y*pw, r=y*pw+pw-1;
+    if (isB(l*4)) { ext[l]=1; q.push(l); }
+    if (isB(r*4)) { ext[r]=1; q.push(r); }
+  }
+  let qi = 0;
+  while (qi < q.length) {
+    const idx = q[qi++], x = idx%pw, y = Math.floor(idx/pw);
+    for (const n of [y>0?idx-pw:-1,y<ph-1?idx+pw:-1,x>0?idx-1:-1,x<pw-1?idx+1:-1]) {
+      if (n>=0 && !ext[n] && isB(n*4)) { ext[n]=1; q.push(n); }
+    }
+  }
+
+  // Find bounds
+  let minX=pw, maxX=0, minY=ph, maxY=0;
+  for (let y=0;y<ph;y++) for (let x=0;x<pw;x++) {
+    const i=(y*pw+x)*4;
+    if (!ext[y*pw+x] && d[i+3]>=20) {
+      minX=Math.min(minX,x); maxX=Math.max(maxX,x);
+      minY=Math.min(minY,y); maxY=Math.max(maxY,y);
+    }
+  }
+
+  return { d, ext, pw, ph, minX, maxX, minY, maxY };
+}
+
+let loaded = 0;
+const results = [];
+
+SPRITES.forEach((sp, idx) => {
+  const img = new Image();
+  img.onload = () => {
+    results[idx] = { ...process(img), ...sp };
+    loaded++;
+    if (loaded === SPRITES.length) drawCrowd();
+  };
+  img.src = sp.src + '?v=' + Date.now();
+});
+
+function drawCrowd() {
+  // Arrange characters in a loose crowd, overlapping slightly
+  // Stagger them in a V/arc shape for depth
+  const positions = [
+    // Back row (smaller Y = further back, drawn first)
+    { idx: 1, cx: 180, by: 340 },  // flux-2-max knight
+    { idx: 3, cx: 320, by: 340 },  // flux-2-pro knight
+    { idx: 5, cx: 460, by: 340 },  // flux-kontext-max knight
+    { idx: 7, cx: 600, by: 340 },  // flux-pro-1.1 knight
+    // Front row
+    { idx: 0, cx: 120, by: 390 },  // nano-banana-2 rogue
+    { idx: 2, cx: 250, by: 395 },  // flux-2-max rogue
+    { idx: 4, cx: 390, by: 390 },  // flux-2-pro rogue
+    { idx: 6, cx: 530, by: 395 },  // flux-kontext-max rogue
+    { idx: 8, cx: 670, by: 390 },  // flux-pro-1.1 rogue
+  ];
+
+  canvas.width = 800;
+  canvas.height = 440;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, 800, 440);
+
+  // Sort by Y so back row draws first (painter's algorithm)
+  positions.sort((a, b) => a.by - b.by);
+
+  positions.forEach(pos => {
+    const r = results[pos.idx];
+    if (!r) return;
+    const { d, ext, pw, ph, minX, maxX, minY, maxY } = r;
+    const charW = maxX - minX + 1;
+    const charH = maxY - minY + 1;
+
+    // Draw character centered at cx, with bottom at by
+    const drawLeft = pos.cx - (charW * SCALE) / 2;
+    const drawTop = pos.by - charH * SCALE;
+
+    for (let y = minY; y <= maxY; y++) {
+      for (let x = minX; x <= maxX; x++) {
+        const i = (y * pw + x) * 4;
+        if (ext[y * pw + x] || d[i+3] < 20) continue;
+        const sx = drawLeft + (x - minX) * SCALE;
+        const sy = drawTop + (y - minY) * SCALE;
+        ctx.fillStyle = `rgb(${d[i]},${d[i+1]},${d[i+2]})`;
+        ctx.fillRect(sx, sy, SCALE, SCALE);
+      }
+    }
+  });
+}
+</script>
+</body>
+</html>

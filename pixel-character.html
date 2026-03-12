@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pixel Wizard</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a1a;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    overflow: hidden;
+    font-family: monospace;
+  }
+  canvas { image-rendering: pixelated; image-rendering: crisp-edges; }
+  .title {
+    color: #8888dd;
+    font-size: 18px;
+    letter-spacing: 6px;
+    text-transform: uppercase;
+    margin-top: 24px;
+    text-shadow: 0 0 12px rgba(100,100,220,0.5);
+  }
+  .controls {
+    color: #556;
+    font-size: 12px;
+    letter-spacing: 2px;
+    margin-top: 12px;
+  }
+  .loading {
+    color: #5a6a9a;
+    font-size: 14px;
+    letter-spacing: 3px;
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+  }
+</style>
+</head>
+<body>
+<div class="loading" id="loadMsg">LOADING SPRITES...</div>
+<canvas id="c"></canvas>
+<div class="title">Aldaron &mdash; Archmage of the Silver Spire</div>
+<div class="controls">ARROW KEYS: TAP TO FACE &bull; HOLD TO WALK</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+const PIXEL_SIZE = 80;
+const SCALE = 6;
+const BLACK_THRESHOLD = 22;
+const WALK_FPS = 6;
+
+// Sprite file map: direction → { idle, walk: [frame1, frame2, frame3] }
+const SPRITE_FILES = {
+  down:  { idle: 'pixel-wizard-gen.png',   walk: ['pixel-wizard-down-walk1.png','pixel-wizard-down-walk2.png','pixel-wizard-down-walk3.png'] },
+  up:    { idle: 'pixel-wizard-back.png',  walk: ['pixel-wizard-up-walk1.png','pixel-wizard-up-walk2.png','pixel-wizard-up-walk3.png'] },
+  left:  { idle: 'pixel-wizard-left.png',  walk: ['pixel-wizard-left-walk1.png','pixel-wizard-left-walk2.png','pixel-wizard-left-walk3.png'] },
+  right: { idle: 'pixel-wizard-right.png', walk: ['pixel-wizard-right-walk1.png','pixel-wizard-right-walk2.png','pixel-wizard-right-walk3.png'] },
+};
+
+// Processed grids: grids[dir].idle, grids[dir].walk[0-2]
+const grids = { down: {}, up: {}, left: {}, right: {} };
+const allBounds = {};
+let PW, PH;
+let loadCount = 0;
+let totalToLoad = 0;
+
+// Count total images
+for (const dir of Object.keys(SPRITE_FILES)) {
+  totalToLoad += 1 + SPRITE_FILES[dir].walk.length; // idle + walk frames
+}
+
+let currentDir = 'down';
+let isWalking = false;
+let walkFrame = 0;
+let walkTimer = 0;
+const keysDown = {};
+
+// ─── Process image into pixel grid with flood-fill bg removal ───
+function processImage(img) {
+  const aspect = img.height / img.width;
+  PW = PIXEL_SIZE;
+  PH = Math.round(PIXEL_SIZE * aspect);
+
+  const sc = document.createElement('canvas');
+  sc.width = PW; sc.height = PH;
+  const sCtx = sc.getContext('2d');
+  sCtx.imageSmoothingEnabled = true;
+  sCtx.imageSmoothingQuality = 'medium';
+  sCtx.drawImage(img, 0, 0, PW, PH);
+
+  const imageData = sCtx.getImageData(0, 0, PW, PH);
+  const data = imageData.data;
+
+  // Flood-fill exterior black
+  const isBlackish = (i) => data[i] < BLACK_THRESHOLD && data[i+1] < BLACK_THRESHOLD && data[i+2] < BLACK_THRESHOLD;
+  const exterior = new Uint8Array(PW * PH);
+  const queue = [];
+
+  for (let x = 0; x < PW; x++) {
+    if (isBlackish(x * 4)) { exterior[x] = 1; queue.push(x); }
+    const bi = (PH-1)*PW+x;
+    if (isBlackish(bi * 4)) { exterior[bi] = 1; queue.push(bi); }
+  }
+  for (let y = 1; y < PH - 1; y++) {
+    const li = y*PW, ri = y*PW+PW-1;
+    if (isBlackish(li * 4)) { exterior[li] = 1; queue.push(li); }
+    if (isBlackish(ri * 4)) { exterior[ri] = 1; queue.push(ri); }
+  }
+  let qi = 0;
+  while (qi < queue.length) {
+    const idx = queue[qi++];
+    const x = idx % PW, y = Math.floor(idx / PW);
+    for (const n of [y>0?idx-PW:-1, y<PH-1?idx+PW:-1, x>0?idx-1:-1, x<PW-1?idx+1:-1]) {
+      if (n >= 0 && !exterior[n] && isBlackish(n * 4)) { exterior[n] = 1; queue.push(n); }
+    }
+  }
+
+  const grid = [];
+  let minX = PW, maxX = 0, minY = PH, maxY = 0;
+  for (let y = 0; y < PH; y++) {
+    grid[y] = [];
+    for (let x = 0; x < PW; x++) {
+      const i = (y * PW + x) * 4;
+      let r = data[i], g = data[i+1], b = data[i+2], a = data[i+3];
+      if (exterior[y * PW + x] || a < 20) a = 0;
+      grid[y][x] = { r, g, b, a };
+      if (a > 0) { minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y); }
+    }
+  }
+  return { grid, bounds: { minX, maxX, minY, maxY, cx: (minX+maxX)/2, cy: (minY+maxY)/2, h: maxY-minY } };
+}
+
+// ─── Load all sprites ───
+function loadSprite(src, callback) {
+  const img = new Image();
+  img.onload = () => {
+    const result = processImage(img);
+    callback(result);
+    loadCount++;
+    document.getElementById('loadMsg').textContent = `LOADING SPRITES... ${loadCount}/${totalToLoad}`;
+    if (loadCount === totalToLoad) startAnimation();
+  };
+  img.onerror = () => {
+    document.getElementById('loadMsg').textContent = `ERROR: ${src}`;
+  };
+  img.src = src + '?v=' + Date.now();
+}
+
+for (const [dir, files] of Object.entries(SPRITE_FILES)) {
+  loadSprite(files.idle, (r) => { grids[dir].idle = r.grid; allBounds[dir] = r.bounds; });
+  grids[dir].walk = [null, null, null];
+  files.walk.forEach((f, i) => {
+    loadSprite(f, (r) => { grids[dir].walk[i] = r.grid; });
+  });
+}
+
+// ─── Input ───
+document.addEventListener('keydown', (e) => {
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) {
+    e.preventDefault();
+    const dirMap = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
+    currentDir = dirMap[e.key];
+    keysDown[e.key] = true;
+  }
+});
+document.addEventListener('keyup', (e) => {
+  delete keysDown[e.key];
+});
+
+function startAnimation() {
+  document.getElementById('loadMsg').style.display = 'none';
+
+  canvas.width = PW * SCALE + 140;
+  canvas.height = PH * SCALE + 100;
+
+  const frameBuffer = document.createElement('canvas');
+  frameBuffer.width = PW;
+  frameBuffer.height = PH;
+  const fCtx = frameBuffer.getContext('2d');
+
+  const stars = Array.from({length: 100}, () => ({
+    x: Math.random() * canvas.width,
+    y: Math.random() * canvas.height,
+    size: Math.random() * 1.5 + 0.3,
+    speed: Math.random() * 2 + 0.5,
+    bright: Math.random(),
+  }));
+
+  let time = 0;
+
+  function animate() {
+    time += 1/60;
+
+    // Walking state
+    const anyArrowDown = keysDown['ArrowUp'] || keysDown['ArrowDown'] || keysDown['ArrowLeft'] || keysDown['ArrowRight'];
+    if (anyArrowDown) {
+      isWalking = true;
+      walkTimer += 1/60;
+      if (walkTimer >= 1/WALK_FPS) {
+        walkTimer -= 1/WALK_FPS;
+        walkFrame = (walkFrame + 1) % 3;
+      }
+    } else {
+      isWalking = false;
+      walkTimer = 0;
+      walkFrame = 0;
+    }
+
+    // Pick the right grid
+    let grid;
+    if (isWalking && grids[currentDir].walk[walkFrame]) {
+      grid = grids[currentDir].walk[walkFrame];
+    } else {
+      grid = grids[currentDir].idle;
+    }
+    const b = allBounds[currentDir] || allBounds['down'];
+
+    // Background
+    const bg = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    bg.addColorStop(0, '#030308');
+    bg.addColorStop(0.4, '#080815');
+    bg.addColorStop(0.8, '#0a0a28');
+    bg.addColorStop(1, '#0c0c1e');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Stars
+    stars.forEach(s => {
+      const tw = 0.2 + 0.8 * (0.5 + 0.5 * Math.sin(time * s.speed + s.bright * 8));
+      ctx.fillStyle = `rgba(160,170,255,${tw * 0.5})`;
+      ctx.fillRect(Math.floor(s.x), Math.floor(s.y), Math.ceil(s.size), Math.ceil(s.size));
+    });
+
+    // Draw sprite to frame buffer with staff glow
+    fCtx.clearRect(0, 0, PW, PH);
+    if (grid) {
+      for (let y = 0; y < PH; y++) {
+        if (!grid[y]) continue;
+        for (let x = 0; x < PW; x++) {
+          const px = grid[y][x];
+          if (!px || px.a < 1) continue;
+          let r = px.r, g = px.g, bl = px.b, a = px.a;
+
+          // Staff orb glow pulse
+          if (bl > 150 && bl > r * 1.5 && bl > g) {
+            const pulse = 0.7 + 0.3 * Math.sin(time * 3);
+            r = Math.min(255, Math.round(r * pulse + 30));
+            g = Math.min(255, Math.round(g * pulse + 20));
+            bl = Math.min(255, Math.round(bl * (0.8 + 0.2 * Math.sin(time * 3))));
+          }
+
+          fCtx.fillStyle = `rgba(${r},${g},${bl},${a / 255})`;
+          fCtx.fillRect(x, y, 1, 1);
+        }
+      }
+    }
+
+    const drawX = (canvas.width - PW * SCALE) / 2;
+    const drawY = 40;
+
+    // Ground shadow
+    const shX = drawX + (b ? b.cx : PW/2) * SCALE;
+    const shY = drawY + ((b ? b.maxY : PH) + 2) * SCALE;
+    const shR = (b ? (b.maxX - b.minX) : PW) * SCALE * 0.5;
+    const shGrad = ctx.createRadialGradient(shX, shY, 0, shX, shY, shR);
+    shGrad.addColorStop(0, 'rgba(60,60,180,0.12)');
+    shGrad.addColorStop(0.6, 'rgba(30,30,100,0.04)');
+    shGrad.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = shGrad;
+    ctx.beginPath();
+    ctx.ellipse(shX, shY, shR, 12, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Render character
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(frameBuffer, drawX, drawY, PW * SCALE, PH * SCALE);
+
+    // Staff orb glow on main canvas
+    if (grid && b) {
+      const orbPulse = 0.5 + 0.5 * Math.sin(time * 2.5);
+      let bestBlue = 0, bestBX = 0, bestBY = 0;
+      for (let sy = b.minY; sy < b.minY + b.h * 0.4; sy += 2) {
+        for (let sx = b.minX; sx <= b.maxX; sx += 2) {
+          if (sy < PH && sx < PW && grid[sy] && grid[sy][sx]) {
+            const p = grid[sy][sx];
+            if (p.b > bestBlue && p.b > p.r * 1.3) { bestBlue = p.b; bestBX = sx; bestBY = sy; }
+          }
+        }
+      }
+      if (bestBlue > 100) {
+        const orbX = drawX + bestBX * SCALE;
+        const orbY = drawY + bestBY * SCALE;
+        const orbGlow = ctx.createRadialGradient(orbX, orbY, 0, orbX, orbY, SCALE * 7);
+        orbGlow.addColorStop(0, `rgba(80,140,255,${orbPulse * 0.18})`);
+        orbGlow.addColorStop(0.3, `rgba(60,100,220,${orbPulse * 0.08})`);
+        orbGlow.addColorStop(1, 'rgba(40,60,180,0)');
+        ctx.fillStyle = orbGlow;
+        ctx.fillRect(orbX - SCALE * 7, orbY - SCALE * 7, SCALE * 14, SCALE * 14);
+      }
+    }
+
+    // Direction + state indicator
+    ctx.fillStyle = 'rgba(100,100,180,0.3)';
+    ctx.font = '12px monospace';
+    ctx.textAlign = 'center';
+    const dirLabels = { down: 'FRONT', up: 'BACK', left: 'LEFT', right: 'RIGHT' };
+    const stateText = isWalking ? `${dirLabels[currentDir]} - WALKING` : dirLabels[currentDir];
+    ctx.fillText(stateText, canvas.width / 2, drawY + PH * SCALE + 35);
+
+    requestAnimationFrame(animate);
+  }
+
+  animate();
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Nature Assets - Model Comparison</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #000; color: #ccc; font-family: 'Courier New', monospace; padding: 20px; }
+  h1 { text-align: center; color: #7f7; margin-bottom: 10px; font-size: 24px; }
+  h2 { text-align: center; color: #888; margin-bottom: 30px; font-size: 14px; font-weight: normal; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 140px repeat(6, 1fr);
+    gap: 8px;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+
+  .header-cell {
+    text-align: center;
+    color: #adf;
+    font-size: 12px;
+    font-weight: bold;
+    padding: 8px 4px;
+    border-bottom: 1px solid #333;
+  }
+
+  .model-label {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding-right: 12px;
+    color: #fda;
+    font-size: 11px;
+    font-weight: bold;
+    border-right: 1px solid #333;
+  }
+
+  .cell {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 6px;
+    border: 1px solid #222;
+    border-radius: 4px;
+    background: #0a0a0a;
+  }
+
+  .cell .pair {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .cell .label {
+    font-size: 9px;
+    color: #666;
+    text-align: center;
+  }
+
+  .cell img {
+    image-rendering: pixelated;
+    border: 1px solid #333;
+  }
+
+  canvas {
+    image-rendering: pixelated;
+    border: 1px solid #555;
+  }
+
+  .corner { border: none; }
+</style>
+</head>
+<body>
+<h1>Nature Assets - Pixel Art Model Comparison</h1>
+<h2>4 Models x 6 Assets | Raw 120px + Pixelated 32px (5x upscale) | Black Background Removed</h2>
+<div class="grid" id="grid"></div>
+
+<script>
+const MODELS = ['nano-banana-2', 'flux-2-max', 'flux-2-pro', 'flux-pro-1.1'];
+const ASSETS = [
+  { id: 'oak-tree', label: 'Oak Tree' },
+  { id: 'pine-tree', label: 'Pine Tree' },
+  { id: 'mushroom-cluster', label: 'Mushroom Cluster' },
+  { id: 'flower-bush', label: 'Flower Bush' },
+  { id: 'fern-plant', label: 'Fern Plant' },
+  { id: 'glowing-fungus', label: 'Glowing Fungus' },
+];
+
+const BLACK_THRESHOLD = 22;
+const SMALL_SIZE = 32;
+const SCALE = 5;
+
+const grid = document.getElementById('grid');
+
+// Corner cell
+const corner = document.createElement('div');
+corner.className = 'corner';
+grid.appendChild(corner);
+
+// Header row - asset names
+ASSETS.forEach(a => {
+  const h = document.createElement('div');
+  h.className = 'header-cell';
+  h.textContent = a.label;
+  grid.appendChild(h);
+});
+
+// Flood fill to remove exterior black
+function removeBlackBackground(imageData) {
+  const { data, width, height } = imageData;
+  const visited = new Uint8Array(width * height);
+  const queue = [];
+
+  function idx(x, y) { return y * width + x; }
+  function isBlack(i) {
+    const p = i * 4;
+    return data[p] <= BLACK_THRESHOLD && data[p+1] <= BLACK_THRESHOLD && data[p+2] <= BLACK_THRESHOLD;
+  }
+
+  // Seed edges
+  for (let x = 0; x < width; x++) {
+    if (isBlack(idx(x, 0))) { queue.push(idx(x, 0)); visited[idx(x, 0)] = 1; }
+    if (isBlack(idx(x, height-1))) { queue.push(idx(x, height-1)); visited[idx(x, height-1)] = 1; }
+  }
+  for (let y = 0; y < height; y++) {
+    if (isBlack(idx(0, y))) { queue.push(idx(0, y)); visited[idx(0, y)] = 1; }
+    if (isBlack(idx(width-1, y))) { queue.push(idx(width-1, y)); visited[idx(width-1, y)] = 1; }
+  }
+
+  // BFS flood fill
+  while (queue.length > 0) {
+    const ci = queue.shift();
+    const cx = ci % width;
+    const cy = (ci - cx) / width;
+    const neighbors = [
+      [cx-1, cy], [cx+1, cy], [cx, cy-1], [cx, cy+1]
+    ];
+    for (const [nx, ny] of neighbors) {
+      if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+      const ni = idx(nx, ny);
+      if (visited[ni]) continue;
+      if (isBlack(ni)) {
+        visited[ni] = 1;
+        queue.push(ni);
+      }
+    }
+  }
+
+  // Set visited (exterior black) to transparent
+  for (let i = 0; i < width * height; i++) {
+    if (visited[i]) {
+      data[i * 4 + 3] = 0;
+    }
+  }
+}
+
+function processImage(img, cell) {
+  // Raw thumbnail at 120px
+  const rawCanvas = document.createElement('canvas');
+  const rawSize = 120;
+  rawCanvas.width = rawSize;
+  rawCanvas.height = rawSize;
+  const rawCtx = rawCanvas.getContext('2d');
+  rawCtx.imageSmoothingEnabled = false;
+  rawCtx.drawImage(img, 0, 0, rawSize, rawSize);
+
+  // Remove black background on raw
+  const rawData = rawCtx.getImageData(0, 0, rawSize, rawSize);
+  removeBlackBackground(rawData);
+  rawCtx.putImageData(rawData, 0, 0);
+
+  // Pixelated: downsample to 32px
+  const smallCanvas = document.createElement('canvas');
+  smallCanvas.width = SMALL_SIZE;
+  smallCanvas.height = SMALL_SIZE;
+  const smallCtx = smallCanvas.getContext('2d');
+  smallCtx.imageSmoothingEnabled = false;
+  smallCtx.drawImage(img, 0, 0, SMALL_SIZE, SMALL_SIZE);
+
+  // Remove black background on small
+  const smallData = smallCtx.getImageData(0, 0, SMALL_SIZE, SMALL_SIZE);
+  removeBlackBackground(smallData);
+  smallCtx.putImageData(smallData, 0, 0);
+
+  // Scale up 5x
+  const upCanvas = document.createElement('canvas');
+  const upSize = SMALL_SIZE * SCALE;
+  upCanvas.width = upSize;
+  upCanvas.height = upSize;
+  upCanvas.style.width = (SMALL_SIZE * SCALE) + 'px';
+  upCanvas.style.height = (SMALL_SIZE * SCALE) + 'px';
+  upCanvas.style.imageRendering = 'pixelated';
+  upCanvas.style.border = '1px solid #555';
+  const upCtx = upCanvas.getContext('2d');
+  upCtx.imageSmoothingEnabled = false;
+  upCtx.drawImage(smallCanvas, 0, 0, upSize, upSize);
+
+  // Build pair container
+  const pair = document.createElement('div');
+  pair.className = 'pair';
+
+  rawCanvas.style.imageRendering = 'pixelated';
+  rawCanvas.style.border = '1px solid #333';
+  pair.appendChild(rawCanvas);
+  pair.appendChild(upCanvas);
+
+  const labels = document.createElement('div');
+  labels.className = 'label';
+  labels.textContent = '120px raw | 32px \u00D75';
+
+  cell.appendChild(pair);
+  cell.appendChild(labels);
+}
+
+// Build rows per model
+MODELS.forEach(model => {
+  // Model label
+  const label = document.createElement('div');
+  label.className = 'model-label';
+  label.textContent = model;
+  grid.appendChild(label);
+
+  ASSETS.forEach(asset => {
+    const cell = document.createElement('div');
+    cell.className = 'cell';
+    grid.appendChild(cell);
+
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => processImage(img, cell);
+    img.src = model + '-' + asset.id + '.png';
+  });
+});
+</script>
+</body>
+</html>
