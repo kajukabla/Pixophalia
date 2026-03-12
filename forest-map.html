@@ -104,6 +104,7 @@ const CHARACTERS = {
     name: 'Ember',
     title: 'Shadow of the Burning Path',
     glowColor: [255, 140, 40],
+    flipDirs: { left: true, right: false },  // flip left sprites horizontally
     sprites: {
       down:  { idle: 'assets/rogue/rogue-front.png', walk: ['assets/rogue/rogue-down-walk1.png','assets/rogue/rogue-down-walk2.png','assets/rogue/rogue-down-walk3.png'] },
       up:    { idle: 'assets/rogue/rogue-back.png', walk: ['assets/rogue/rogue-up-walk1.png','assets/rogue/rogue-up-walk2.png','assets/rogue/rogue-up-walk3.png'] },
@@ -165,7 +166,7 @@ function processSprite(img, pxSize) {
 }
 
 // ─── DRAW SPRITE ───
-function drawSprite(ctx, sprite, cx, bottomY, scale) {
+function drawSprite(ctx, sprite, cx, bottomY, scale, flipX) {
   const { d, ext, pw, ph, minX, maxX, minY, maxY } = sprite;
   if (minX > maxX) return;
   const charW = maxX - minX + 1;
@@ -177,7 +178,8 @@ function drawSprite(ctx, sprite, cx, bottomY, scale) {
     for (let x = minX; x <= maxX; x++) {
       const i = (y * pw + x) * 4;
       if (ext[y * pw + x] || d[i + 3] < 20) continue;
-      const sx = drawLeft + (x - minX) * scale;
+      const px = flipX ? (charW - 1 - (x - minX)) : (x - minX);
+      const sx = drawLeft + px * scale;
       const sy = drawTop + (y - minY) * scale;
       ctx.fillStyle = `rgba(${d[i]},${d[i+1]},${d[i+2]},${d[i+3]/255})`;
       ctx.fillRect(Math.round(sx), Math.round(sy), Math.ceil(scale), Math.ceil(scale));
@@ -457,12 +459,14 @@ function animate(ts) {
       charSprite = cd.sprites[charDir].idle;
     }
     if (charSprite) {
+      const flipX = cd.info.flipDirs?.[charDir] || false;
       drawables.push({
         type: 'char',
         sprite: charSprite,
         cx: charX - camX,
         by: charY - camY,
-        scale: charSprite._scale || 3.0
+        scale: charSprite._scale || 3.0,
+        flipX
       });
     }
   }
@@ -472,7 +476,7 @@ function animate(ts) {
 
   // Draw all
   drawables.forEach(item => {
-    drawSprite(ctx, item.sprite, item.cx, item.by, item.scale);
+    drawSprite(ctx, item.sprite, item.cx, item.by, item.scale, item.flipX);
 
     // Glowing mushroom effect
     if (item.asset === 'mushroom-glow') {
