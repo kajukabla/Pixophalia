@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Enchanted Forest — Pixophalia</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    overflow: hidden;
+    font-family: monospace;
+  }
+  canvas { image-rendering: pixelated; image-rendering: crisp-edges; }
+  .hud {
+    position: fixed;
+    top: 10px;
+    left: 10px;
+    color: #556;
+    font-size: 11px;
+    line-height: 1.5;
+    pointer-events: none;
+  }
+  .controls {
+    position: fixed;
+    bottom: 10px;
+    color: #445;
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-align: center;
+  }
+  .loading {
+    color: #5a6a9a;
+    font-size: 14px;
+    letter-spacing: 3px;
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+  }
+</style>
+</head>
+<body>
+<div class="loading" id="loadMsg">LOADING FOREST...</div>
+<canvas id="c"></canvas>
+<div class="hud" id="hud"></div>
+<div class="controls">ARROW KEYS: MOVE &bull; TAB or SPACE: SWITCH CHARACTER</div>
+<div style="position:fixed;top:10px;right:10px;">
+  <button id="switchBtn" style="background:#1a1a2e;color:#aaf;border:1px solid #55a;padding:6px 14px;font-family:monospace;font-size:12px;cursor:pointer;border-radius:3px;">SWITCH CHARACTER</button>
+</div>
+
+<script>
+// ─── CONFIG ───
+const PX = 48;
+const CHAR_PX = 64;
+const TILE = 5;
+const VIEW_W = 1200;
+const VIEW_H = 700;
+const MAP_W = 2400;
+const MAP_H = 1600;
+const BLACK_THRESH = 22;
+const WALK_FPS = 6;
+const SPEED = 150;
+const CHAR_TARGET_H = 140;
+
+// ─── ASSET DEFINITIONS ───
+const NATURE_ASSETS = {
+  // Large assets (trees, boulders)
+  'large-oak-tree':   { file: 'assets/nature/large-oak-tree.png', baseScale: 6.0, category: 'tree' },
+  'large-pine-tree':  { file: 'assets/nature/large-pine-tree.png', baseScale: 6.0, category: 'tree' },
+  'willow-tree':      { file: 'assets/nature/willow-tree.png', baseScale: 5.5, category: 'tree' },
+  'dead-tree':        { file: 'assets/nature/dead-tree.png', baseScale: 5.0, category: 'tree' },
+  'tall-mushroom':    { file: 'assets/nature/tall-mushroom.png', baseScale: 4.0, category: 'tall' },
+  'boulder':          { file: 'assets/nature/boulder.png', baseScale: 3.0, category: 'medium' },
+  'fallen-log':       { file: 'assets/nature/fallen-log.png', baseScale: 3.0, category: 'medium' },
+  // Small assets (ground level)
+  'bush-large':       { file: 'assets/nature/bush-large.png', baseScale: 2.5, category: 'small' },
+  'bush-small':       { file: 'assets/nature/bush-small.png', baseScale: 2.0, category: 'small' },
+  'fern-cluster':     { file: 'assets/nature/fern-cluster.png', baseScale: 2.0, category: 'small' },
+  'mushroom-red':     { file: 'assets/nature/mushroom-red.png', baseScale: 2.0, category: 'small' },
+  'mushroom-glow':    { file: 'assets/nature/mushroom-glow.png', baseScale: 2.0, category: 'small' },
+  'flower-patch':     { file: 'assets/nature/flower-patch.png', baseScale: 2.0, category: 'small' },
+  'tall-grass':       { file: 'assets/nature/tall-grass.png', baseScale: 1.8, category: 'small' },
+  'vine-hanging':     { file: 'assets/nature/vine-hanging.png', baseScale: 2.5, category: 'tall' },
+};
+
+// Character sprite definitions
+const CHARACTERS = {
+  wizard: {
+    name: 'Aldaron',
+    title: 'Archmage of the Silver Spire',
+    glowColor: [80, 140, 255],
+    sprites: {
+      down:  { idle: 'pixel-wizard-gen.png', walk: ['pixel-wizard-down-walk1.png','pixel-wizard-down-walk2.png','pixel-wizard-down-walk3.png'] },
+      up:    { idle: 'pixel-wizard-back.png', walk: ['pixel-wizard-up-walk1.png','pixel-wizard-up-walk2.png','pixel-wizard-up-walk3.png'] },
+      left:  { idle: 'pixel-wizard-left.png', walk: ['pixel-wizard-left-walk1.png','pixel-wizard-left-walk2.png','pixel-wizard-left-walk3.png'] },
+      right: { idle: 'pixel-wizard-right.png', walk: ['pixel-wizard-right-walk1.png','pixel-wizard-right-walk2.png','pixel-wizard-right-walk3.png'] },
+    }
+  },
+  rogue: {
+    name: 'Ember',
+    title: 'Shadow of the Burning Path',
+    glowColor: [255, 140, 40],
+    sprites: {
+      down:  { idle: 'assets/rogue/rogue-front.png', walk: ['assets/rogue/rogue-down-walk1.png','assets/rogue/rogue-down-walk2.png','assets/rogue/rogue-down-walk3.png'] },
+      up:    { idle: 'assets/rogue/rogue-back.png', walk: ['assets/rogue/rogue-up-walk1.png','assets/rogue/rogue-up-walk2.png','assets/rogue/rogue-up-walk3.png'] },
+      left:  { idle: 'assets/rogue/rogue-left.png', walk: ['assets/rogue/rogue-left-walk1.png','assets/rogue/rogue-left-walk2.png','assets/rogue/rogue-left-walk3.png'] },
+      right: { idle: 'assets/rogue/rogue-right.png', walk: ['assets/rogue/rogue-right-walk1.png','assets/rogue/rogue-right-walk2.png','assets/rogue/rogue-right-walk3.png'] },
+    }
+  }
+};
+
+// ─── FLOOD-FILL BG REMOVAL ───
+function floodFillRemove(data, w, h) {
+  const isB = (i) => data[i] <= BLACK_THRESH && data[i+1] <= BLACK_THRESH && data[i+2] <= BLACK_THRESH;
+  const ext = new Uint8Array(w * h);
+  const q = [];
+  for (let x = 0; x < w; x++) {
+    if (isB(x * 4)) { ext[x] = 1; q.push(x); }
+    const b = (h - 1) * w + x;
+    if (isB(b * 4)) { ext[b] = 1; q.push(b); }
+  }
+  for (let y = 1; y < h - 1; y++) {
+    const l = y * w, r = y * w + w - 1;
+    if (isB(l * 4)) { ext[l] = 1; q.push(l); }
+    if (isB(r * 4)) { ext[r] = 1; q.push(r); }
+  }
+  let qi = 0;
+  while (qi < q.length) {
+    const idx = q[qi++], x = idx % w, y = Math.floor(idx / w);
+    for (const n of [y > 0 ? idx - w : -1, y < h - 1 ? idx + w : -1, x > 0 ? idx - 1 : -1, x < w - 1 ? idx + 1 : -1]) {
+      if (n >= 0 && !ext[n] && isB(n * 4)) { ext[n] = 1; q.push(n); }
+    }
+  }
+  return ext;
+}
+
+function processSprite(img, pxSize) {
+  const aspect = img.height / img.width;
+  const pw = pxSize, ph = Math.round(pxSize * aspect);
+  const sc = document.createElement('canvas');
+  sc.width = pw; sc.height = ph;
+  const sCtx = sc.getContext('2d');
+  sCtx.imageSmoothingEnabled = true;
+  sCtx.imageSmoothingQuality = 'medium';
+  sCtx.drawImage(img, 0, 0, pw, ph);
+  const id = sCtx.getImageData(0, 0, pw, ph);
+  const d = id.data;
+  const ext = floodFillRemove(d, pw, ph);
+
+  let minX = pw, maxX = 0, minY = ph, maxY = 0;
+  for (let y = 0; y < ph; y++) {
+    for (let x = 0; x < pw; x++) {
+      const i = (y * pw + x) * 4;
+      if (!ext[y * pw + x] && d[i + 3] >= 20) {
+        minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+        minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+      }
+    }
+  }
+  return { d, ext, pw, ph, minX, maxX, minY, maxY };
+}
+
+// ─── DRAW SPRITE ───
+function drawSprite(ctx, sprite, cx, bottomY, scale) {
+  const { d, ext, pw, ph, minX, maxX, minY, maxY } = sprite;
+  if (minX > maxX) return;
+  const charW = maxX - minX + 1;
+  const charH = maxY - minY + 1;
+  const drawLeft = cx - (charW * scale) / 2;
+  const drawTop = bottomY - charH * scale;
+
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      const i = (y * pw + x) * 4;
+      if (ext[y * pw + x] || d[i + 3] < 20) continue;
+      const sx = drawLeft + (x - minX) * scale;
+      const sy = drawTop + (y - minY) * scale;
+      ctx.fillStyle = `rgba(${d[i]},${d[i+1]},${d[i+2]},${d[i+3]/255})`;
+      ctx.fillRect(Math.round(sx), Math.round(sy), Math.ceil(scale), Math.ceil(scale));
+    }
+  }
+}
+
+// ─── STATE ───
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = VIEW_W;
+canvas.height = VIEW_H;
+
+const natureSprites = {};
+const charData = {};  // charKey -> { sprites: { dir: { idle, walk[] } }, scale }
+let activeChar = 'wizard';
+let charDir = 'down', charWalking = false, charFrame = 0, walkTimer = 0;
+let charX = MAP_W / 2, charY = MAP_H / 2;
+const keysDown = {};
+
+let loadCount = 0, totalLoads = 0;
+let ready = false;
+
+// ─── PROCEDURAL FOREST LAYOUT ───
+// Generate a dense, natural-feeling forest
+const rng = (function(seed) {
+  let s = seed;
+  return function() { s = (s * 16807 + 0) % 2147483647; return s / 2147483647; };
+})(42);
+
+const placements = [];
+
+// Back layer: dense trees
+for (let i = 0; i < 25; i++) {
+  const treeType = rng() < 0.35 ? 'large-oak-tree' : rng() < 0.6 ? 'large-pine-tree' : rng() < 0.8 ? 'willow-tree' : 'dead-tree';
+  const x = 60 + rng() * (MAP_W - 120);
+  const y = 200 + rng() * 400;
+  const scaleVar = 0.8 + rng() * 0.4;
+  placements.push({ asset: treeType, x, y, scaleVar });
+}
+
+// Mid layer: more trees + tall mushrooms + boulders
+for (let i = 0; i < 20; i++) {
+  const type = rng() < 0.4 ? (rng() < 0.5 ? 'large-oak-tree' : 'large-pine-tree') : rng() < 0.6 ? 'tall-mushroom' : rng() < 0.8 ? 'boulder' : 'fallen-log';
+  const x = 40 + rng() * (MAP_W - 80);
+  const y = 550 + rng() * 400;
+  const scaleVar = 0.8 + rng() * 0.4;
+  placements.push({ asset: type, x, y, scaleVar });
+}
+
+// Foreground trees
+for (let i = 0; i < 15; i++) {
+  const treeType = rng() < 0.4 ? 'large-oak-tree' : rng() < 0.7 ? 'large-pine-tree' : 'willow-tree';
+  const x = 40 + rng() * (MAP_W - 80);
+  const y = 950 + rng() * 500;
+  const scaleVar = 0.9 + rng() * 0.3;
+  placements.push({ asset: treeType, x, y, scaleVar });
+}
+
+// Scatter small assets everywhere
+for (let i = 0; i < 60; i++) {
+  const types = ['bush-large', 'bush-small', 'fern-cluster', 'mushroom-red', 'mushroom-glow', 'flower-patch', 'tall-grass'];
+  const type = types[Math.floor(rng() * types.length)];
+  const x = 30 + rng() * (MAP_W - 60);
+  const y = 300 + rng() * (MAP_H - 400);
+  const scaleVar = 0.7 + rng() * 0.6;
+  placements.push({ asset: type, x, y, scaleVar });
+}
+
+// Hanging vines near trees (upper area)
+for (let i = 0; i < 10; i++) {
+  const x = 60 + rng() * (MAP_W - 120);
+  const y = 200 + rng() * 300;
+  placements.push({ asset: 'vine-hanging', x, y, scaleVar: 0.8 + rng() * 0.4 });
+}
+
+// ─── LOADING ───
+function loadAll() {
+  // Count total images
+  totalLoads = Object.keys(NATURE_ASSETS).length;
+  for (const charKey of Object.keys(CHARACTERS)) {
+    totalLoads += 4 + 12; // 4 idle + 12 walk
+  }
+
+  // Load nature assets
+  for (const [key, info] of Object.entries(NATURE_ASSETS)) {
+    const img = new Image();
+    img.onload = () => { natureSprites[key] = processSprite(img, PX); onLoad(); };
+    img.onerror = () => { console.warn(`Failed to load: ${info.file}`); onLoad(); };
+    img.src = info.file + '?v=' + Date.now();
+  }
+
+  // Load character sprites
+  for (const [charKey, charInfo] of Object.entries(CHARACTERS)) {
+    charData[charKey] = { sprites: { down: {}, up: {}, left: {}, right: {} }, scale: 3.0, info: charInfo };
+
+    for (const [dir, files] of Object.entries(charInfo.sprites)) {
+      charData[charKey].sprites[dir].walk = [null, null, null];
+
+      const idleImg = new Image();
+      idleImg.onload = () => { charData[charKey].sprites[dir].idle = processSprite(idleImg, CHAR_PX); onLoad(); };
+      idleImg.onerror = () => { console.warn(`Failed: ${files.idle}`); onLoad(); };
+      idleImg.src = files.idle + '?v=' + Date.now();
+
+      files.walk.forEach((f, i) => {
+        const wImg = new Image();
+        wImg.onload = () => { charData[charKey].sprites[dir].walk[i] = processSprite(wImg, CHAR_PX); onLoad(); };
+        wImg.onerror = () => { console.warn(`Failed: ${f}`); onLoad(); };
+        wImg.src = f + '?v=' + Date.now();
+      });
+    }
+  }
+}
+
+function onLoad() {
+  loadCount++;
+  document.getElementById('loadMsg').textContent = `LOADING FOREST... ${loadCount}/${totalLoads}`;
+  if (loadCount >= totalLoads) {
+    document.getElementById('loadMsg').style.display = 'none';
+
+    // Compute per-sprite scale for characters so all frames render at CHAR_TARGET_H
+    for (const charKey of Object.keys(charData)) {
+      const cd = charData[charKey];
+      for (const dir of ['down', 'up', 'left', 'right']) {
+        const s = cd.sprites[dir].idle;
+        if (s) { const h = s.maxY - s.minY + 1; s._scale = h > 0 ? CHAR_TARGET_H / h : 3.0; }
+        for (let i = 0; i < 3; i++) {
+          const w = cd.sprites[dir].walk[i];
+          if (w) { const h = w.maxY - w.minY + 1; w._scale = h > 0 ? CHAR_TARGET_H / h : 3.0; }
+        }
+      }
+    }
+
+    ready = true;
+    updateHUD();
+  }
+}
+
+// ─── INPUT ───
+document.addEventListener('keydown', (e) => {
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) {
+    e.preventDefault();
+    const dirMap = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
+    charDir = dirMap[e.key];
+    keysDown[e.key] = true;
+  }
+  if (e.key === 'Tab' || e.key === ' ') {
+    e.preventDefault();
+    switchCharacter();
+  }
+});
+document.addEventListener('keyup', (e) => { delete keysDown[e.key]; });
+
+function switchCharacter() {
+  const chars = Object.keys(CHARACTERS);
+  const idx = chars.indexOf(activeChar);
+  activeChar = chars[(idx + 1) % chars.length];
+  updateHUD();
+}
+
+document.getElementById('switchBtn').addEventListener('click', switchCharacter);
+
+// ─── HUD ───
+function updateHUD() {
+  const info = CHARACTERS[activeChar];
+  const glow = `rgb(${info.glowColor.join(',')})`;
+  document.getElementById('hud').innerHTML =
+    `<span style="color:${glow}">${info.name}</span> <span style="color:#445">— ${info.title}</span><br>` +
+    `<span style="color:#445">TAB to switch</span>`;
+}
+
+// ─── STARS ───
+const stars = Array.from({length: 120}, () => ({
+  x: Math.random() * MAP_W,
+  y: Math.random() * MAP_H * 0.25,
+  size: Math.random() * 1.5 + 0.3,
+  speed: Math.random() * 2 + 0.5,
+  bright: Math.random(),
+}));
+
+// ─── MAIN LOOP ───
+let lastTime = 0;
+
+function animate(ts) {
+  requestAnimationFrame(animate);
+  if (!ready) return;
+
+  const dt = lastTime ? (ts - lastTime) / 1000 : 0;
+  lastTime = ts;
+  const time = ts / 1000;
+
+  // Movement
+  const anyArrow = keysDown['ArrowUp'] || keysDown['ArrowDown'] || keysDown['ArrowLeft'] || keysDown['ArrowRight'];
+  if (anyArrow) {
+    charWalking = true;
+    walkTimer += dt;
+    if (walkTimer >= 1 / WALK_FPS) { walkTimer -= 1 / WALK_FPS; charFrame = (charFrame + 1) % 3; }
+    if (keysDown['ArrowLeft']) charX -= SPEED * dt;
+    if (keysDown['ArrowRight']) charX += SPEED * dt;
+    if (keysDown['ArrowUp']) charY -= SPEED * dt;
+    if (keysDown['ArrowDown']) charY += SPEED * dt;
+    charX = Math.max(40, Math.min(MAP_W - 40, charX));
+    charY = Math.max(100, Math.min(MAP_H - 40, charY));
+  } else {
+    charWalking = false;
+    walkTimer = 0;
+    charFrame = 0;
+  }
+
+  // Camera follows character
+  const camX = Math.max(0, Math.min(MAP_W - VIEW_W, charX - VIEW_W / 2));
+  const camY = Math.max(0, Math.min(MAP_H - VIEW_H, charY - VIEW_H / 2));
+
+  // ─── DRAW ───
+  // Sky gradient
+  const bg = ctx.createLinearGradient(0, 0, 0, VIEW_H);
+  bg.addColorStop(0, '#020210');
+  bg.addColorStop(0.2, '#060818');
+  bg.addColorStop(0.4, '#0a1225');
+  bg.addColorStop(0.6, '#081a18');
+  bg.addColorStop(1, '#061008');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+
+  // Stars (parallax — move slower than camera)
+  stars.forEach(s => {
+    const sx = s.x - camX * 0.3;
+    const sy = s.y - camY * 0.1;
+    if (sx < -10 || sx > VIEW_W + 10 || sy < -10 || sy > VIEW_H + 10) return;
+    const tw = 0.2 + 0.8 * (0.5 + 0.5 * Math.sin(time * s.speed + s.bright * 8));
+    ctx.fillStyle = `rgba(160,170,255,${tw * 0.4})`;
+    ctx.fillRect(Math.floor(sx), Math.floor(sy), Math.ceil(s.size), Math.ceil(s.size));
+  });
+
+  // Ground
+  const groundY = MAP_H * 0.2 - camY;
+  ctx.fillStyle = '#0a1a0a';
+  ctx.fillRect(0, Math.max(0, groundY), VIEW_W, VIEW_H);
+
+  // Ground texture
+  for (let y = Math.max(0, Math.floor(groundY)); y < VIEW_H; y += 8) {
+    const a = 0.015 + 0.015 * Math.sin((y + camY) * 0.2);
+    ctx.fillStyle = `rgba(20,60,20,${a})`;
+    ctx.fillRect(0, y, VIEW_W, 2);
+  }
+
+  // Collect drawables
+  const drawables = [];
+
+  // Nature assets
+  placements.forEach((p, idx) => {
+    const info = NATURE_ASSETS[p.asset];
+    const sprite = natureSprites[p.asset];
+    if (!info || !sprite) return;
+
+    const screenX = p.x - camX;
+    const screenY = p.y - camY;
+
+    // Cull off-screen
+    const scale = info.baseScale * p.scaleVar;
+    const spriteH = (sprite.maxY - sprite.minY) * scale;
+    if (screenX < -300 || screenX > VIEW_W + 300 || screenY < -spriteH || screenY > VIEW_H + 100) return;
+
+    drawables.push({
+      type: 'nature', sprite, cx: screenX, by: screenY, scale,
+      asset: p.asset, idx
+    });
+  });
+
+  // Active character
+  const cd = charData[activeChar];
+  if (cd) {
+    let charSprite;
+    if (charWalking && cd.sprites[charDir].walk[charFrame]) {
+      charSprite = cd.sprites[charDir].walk[charFrame];
+    } else {
+      charSprite = cd.sprites[charDir].idle;
+    }
+    if (charSprite) {
+      drawables.push({
+        type: 'char',
+        sprite: charSprite,
+        cx: charX - camX,
+        by: charY - camY,
+        scale: charSprite._scale || 3.0
+      });
+    }
+  }
+
+  // Sort by Y (painter's algorithm)
+  drawables.sort((a, b) => a.by - b.by);
+
+  // Draw all
+  drawables.forEach(item => {
+    drawSprite(ctx, item.sprite, item.cx, item.by, item.scale);
+
+    // Glowing mushroom effect
+    if (item.asset === 'mushroom-glow') {
+      const pulse = 0.3 + 0.3 * Math.sin(time * 2 + item.cx * 0.05);
+      const glow = ctx.createRadialGradient(item.cx, item.by - 15, 0, item.cx, item.by - 15, 35);
+      glow.addColorStop(0, `rgba(60,220,255,${pulse * 0.15})`);
+      glow.addColorStop(0.5, `rgba(30,150,200,${pulse * 0.06})`);
+      glow.addColorStop(1, 'rgba(20,80,120,0)');
+      ctx.fillStyle = glow;
+      ctx.fillRect(item.cx - 35, item.by - 50, 70, 70);
+    }
+
+    // Tall mushroom glow
+    if (item.asset === 'tall-mushroom') {
+      const pulse = 0.2 + 0.2 * Math.sin(time * 1.5 + item.cx * 0.03);
+      const glow = ctx.createRadialGradient(item.cx, item.by - 60, 0, item.cx, item.by - 60, 50);
+      glow.addColorStop(0, `rgba(120,60,255,${pulse * 0.12})`);
+      glow.addColorStop(0.5, `rgba(80,40,200,${pulse * 0.05})`);
+      glow.addColorStop(1, 'rgba(40,20,100,0)');
+      ctx.fillStyle = glow;
+      ctx.fillRect(item.cx - 50, item.by - 110, 100, 100);
+    }
+
+    // Character glow
+    if (item.type === 'char' && cd) {
+      const [gr, gg, gb] = cd.info.glowColor;
+      const pulse = 0.5 + 0.5 * Math.sin(time * 2.5);
+      const glow = ctx.createRadialGradient(item.cx, item.by - 50, 0, item.cx, item.by - 50, 35);
+      glow.addColorStop(0, `rgba(${gr},${gg},${gb},${pulse * 0.15})`);
+      glow.addColorStop(0.5, `rgba(${gr},${gg},${gb},${pulse * 0.06})`);
+      glow.addColorStop(1, `rgba(${gr},${gg},${gb},0)`);
+      ctx.fillStyle = glow;
+      ctx.fillRect(item.cx - 35, item.by - 85, 70, 70);
+    }
+  });
+
+  // Fog overlay at edges
+  const fogGrad = ctx.createLinearGradient(0, 0, 0, VIEW_H);
+  fogGrad.addColorStop(0, 'rgba(5,5,15,0.3)');
+  fogGrad.addColorStop(0.3, 'rgba(5,5,15,0)');
+  fogGrad.addColorStop(0.8, 'rgba(5,10,5,0)');
+  fogGrad.addColorStop(1, 'rgba(5,10,5,0.4)');
+  ctx.fillStyle = fogGrad;
+  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+}
+
+// ─── GO ───
+loadAll();
+requestAnimationFrame(animate);
+</script>
+</body>
+</html>
