@@ -1,0 +1,959 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ARC-AGI-3 Solver Dashboard — Pixophalia</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    background: #0a0a0f;
+    color: #e0e0e0;
+    font-family: 'Courier New', monospace;
+    overflow-x: hidden;
+}
+
+.header {
+    background: linear-gradient(135deg, #1a0a2e 0%, #0d1b2a 50%, #1a2a1a 100%);
+    padding: 24px 32px;
+    border-bottom: 2px solid #333;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+}
+.header h1 {
+    font-size: 22px;
+    color: #7fdbca;
+    text-shadow: 0 0 10px rgba(127,219,202,0.3);
+}
+.header .subtitle { color: #888; font-size: 13px; }
+
+.controls {
+    background: #111;
+    padding: 16px 32px;
+    border-bottom: 1px solid #222;
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+.controls label { color: #aaa; font-size: 12px; }
+.controls input, .controls select, .controls button {
+    background: #1a1a2e;
+    border: 1px solid #333;
+    color: #ddd;
+    padding: 6px 12px;
+    font-family: inherit;
+    font-size: 13px;
+    border-radius: 4px;
+}
+.controls button {
+    background: #2a4a3a;
+    border-color: #4a8a6a;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.controls button:hover { background: #3a6a5a; }
+
+.dashboard {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    padding: 16px 32px;
+    max-width: 1600px;
+    margin: 0 auto;
+}
+@media (max-width: 1000px) {
+    .dashboard { grid-template-columns: 1fr; }
+}
+
+.panel {
+    background: #111118;
+    border: 1px solid #222;
+    border-radius: 8px;
+    overflow: hidden;
+}
+.panel-header {
+    background: #1a1a28;
+    padding: 10px 16px;
+    border-bottom: 1px solid #222;
+    font-size: 13px;
+    color: #7fdbca;
+    font-weight: bold;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.panel-body { padding: 16px; }
+.panel-body canvas {
+    width: 100%;
+    border-radius: 4px;
+}
+
+.stat-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+}
+.stat-card {
+    background: #0d0d15;
+    border: 1px solid #1a1a2e;
+    border-radius: 6px;
+    padding: 12px;
+    text-align: center;
+}
+.stat-card .value {
+    font-size: 24px;
+    font-weight: bold;
+    color: #7fdbca;
+}
+.stat-card .label {
+    font-size: 11px;
+    color: #666;
+    margin-top: 4px;
+}
+
+.arc-grid {
+    display: inline-grid;
+    gap: 1px;
+    background: #333;
+    border: 2px solid #444;
+    border-radius: 4px;
+    overflow: hidden;
+}
+.arc-cell {
+    width: 24px;
+    height: 24px;
+}
+
+.pattern-list {
+    max-height: 300px;
+    overflow-y: auto;
+}
+.pattern-item {
+    padding: 8px 12px;
+    border-bottom: 1px solid #1a1a1a;
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+}
+.pattern-item:hover { background: #1a1a2e; }
+.pattern-type {
+    background: #2a2a4a;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 10px;
+    color: #aaa;
+}
+.pattern-freq { color: #7fdbca; }
+
+.full-width { grid-column: 1 / -1; }
+
+/* ARC Color Palette */
+.arc-color-0 { background: #000000; }
+.arc-color-1 { background: #0074D9; }
+.arc-color-2 { background: #FF4136; }
+.arc-color-3 { background: #2ECC40; }
+.arc-color-4 { background: #FFDC00; }
+.arc-color-5 { background: #AAAAAA; }
+.arc-color-6 { background: #F012BE; }
+.arc-color-7 { background: #FF851B; }
+.arc-color-8 { background: #7FDBFF; }
+.arc-color-9 { background: #870C25; }
+
+.toast {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: #2a4a3a;
+    border: 1px solid #4a8a6a;
+    padding: 12px 20px;
+    border-radius: 6px;
+    font-size: 13px;
+    opacity: 0;
+    transition: opacity 0.3s;
+    z-index: 100;
+}
+.toast.show { opacity: 1; }
+
+.legend {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+}
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: #888;
+}
+.legend-swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 2px;
+    border: 1px solid #444;
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+    <div>
+        <h1>ARC-AGI-3 Solver Dashboard</h1>
+        <div class="subtitle">Pixel Extraction + Pattern DB + Graph Analysis + Reinforcement Learning</div>
+    </div>
+</div>
+
+<div class="controls">
+    <label>Data Source:
+        <input type="file" id="dataFile" accept=".json">
+    </label>
+    <label>Game:
+        <select id="gameSelect"><option value="">-- load data --</option></select>
+    </label>
+    <button onclick="loadDemo()">Load Demo Data</button>
+    <button onclick="exportReport()">Export Report</button>
+</div>
+
+<div class="dashboard" id="dashboard">
+
+    <!-- Stats Overview -->
+    <div class="panel full-width">
+        <div class="panel-header">Research Overview</div>
+        <div class="panel-body">
+            <div class="stat-grid" id="statsGrid">
+                <div class="stat-card"><div class="value" id="statStates">0</div><div class="label">Unique States</div></div>
+                <div class="stat-card"><div class="value" id="statTransitions">0</div><div class="label">Transitions</div></div>
+                <div class="stat-card"><div class="value" id="statPatterns">0</div><div class="label">Patterns Found</div></div>
+                <div class="stat-card"><div class="value" id="statEpisodes">0</div><div class="label">Episodes</div></div>
+                <div class="stat-card"><div class="value" id="statBestReward">0</div><div class="label">Best Reward</div></div>
+                <div class="stat-card"><div class="value" id="statSolveRate">0%</div><div class="label">Solve Rate</div></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Reward Chart -->
+    <div class="panel">
+        <div class="panel-header">Reward Progression</div>
+        <div class="panel-body">
+            <canvas id="rewardChart" height="250"></canvas>
+        </div>
+    </div>
+
+    <!-- Loss Chart -->
+    <div class="panel">
+        <div class="panel-header">Training Loss</div>
+        <div class="panel-body">
+            <canvas id="lossChart" height="250"></canvas>
+        </div>
+    </div>
+
+    <!-- State Graph Visualization -->
+    <div class="panel">
+        <div class="panel-header">
+            State-Transition Graph
+            <span id="graphInfo" style="color:#666; font-weight:normal; font-size:11px;"></span>
+        </div>
+        <div class="panel-body">
+            <canvas id="graphCanvas" height="350"></canvas>
+        </div>
+    </div>
+
+    <!-- Color Palette Analysis -->
+    <div class="panel">
+        <div class="panel-header">ARC Color Palette</div>
+        <div class="panel-body">
+            <div class="legend" id="colorPalette"></div>
+            <canvas id="colorChart" height="250" style="margin-top: 12px;"></canvas>
+        </div>
+    </div>
+
+    <!-- Pattern List -->
+    <div class="panel">
+        <div class="panel-header">
+            Discovered Patterns
+            <span id="patternCount" style="color:#666; font-weight:normal; font-size:11px;"></span>
+        </div>
+        <div class="panel-body">
+            <div class="pattern-list" id="patternList"></div>
+        </div>
+    </div>
+
+    <!-- Grid Viewer -->
+    <div class="panel">
+        <div class="panel-header">Grid State Viewer</div>
+        <div class="panel-body" style="text-align: center;">
+            <div id="gridViewer"></div>
+            <div style="margin-top: 8px;">
+                <button onclick="prevGrid()" style="background:#2a2a4a; border-color:#4a4a8a; padding:4px 12px; cursor:pointer; color:#ddd; border-radius:3px;">Prev</button>
+                <span id="gridIndex" style="margin: 0 12px; color: #666; font-size: 12px;">0 / 0</span>
+                <button onclick="nextGrid()" style="background:#2a2a4a; border-color:#4a4a8a; padding:4px 12px; cursor:pointer; color:#ddd; border-radius:3px;">Next</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Exploration Map -->
+    <div class="panel full-width">
+        <div class="panel-header">Exploration Heatmap (Actions per State)</div>
+        <div class="panel-body">
+            <canvas id="explorationMap" height="200"></canvas>
+        </div>
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// === ARC Color Palette ===
+const ARC_COLORS = [
+    '#000000', '#0074D9', '#FF4136', '#2ECC40', '#FFDC00',
+    '#AAAAAA', '#F012BE', '#FF851B', '#7FDBFF', '#870C25'
+];
+const ARC_NAMES = [
+    'Black', 'Blue', 'Red', 'Green', 'Yellow',
+    'Grey', 'Magenta', 'Orange', 'Light Blue', 'Maroon'
+];
+
+let dashboardData = null;
+let currentGame = null;
+let gridStates = [];
+let gridIndex = 0;
+
+// === Data Loading ===
+
+document.getElementById('dataFile').addEventListener('change', function(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(ev) {
+        try {
+            dashboardData = JSON.parse(ev.target.result);
+            populateGameSelect();
+            showToast('Data loaded successfully');
+        } catch(err) {
+            showToast('Error parsing JSON: ' + err.message);
+        }
+    };
+    reader.readAsText(file);
+});
+
+document.getElementById('gameSelect').addEventListener('change', function() {
+    if (this.value) {
+        currentGame = this.value;
+        renderDashboard();
+    }
+});
+
+function populateGameSelect() {
+    const sel = document.getElementById('gameSelect');
+    sel.innerHTML = '<option value="">-- select game --</option>';
+
+    if (dashboardData.games) {
+        Object.keys(dashboardData.games).forEach(id => {
+            const opt = document.createElement('option');
+            opt.value = id;
+            opt.textContent = id;
+            sel.appendChild(opt);
+        });
+    }
+
+    // Auto-select first game
+    if (sel.options.length > 1) {
+        sel.selectedIndex = 1;
+        currentGame = sel.value;
+        renderDashboard();
+    }
+}
+
+// === Demo Data ===
+
+function loadDemo() {
+    dashboardData = generateDemoData();
+    populateGameSelect();
+    showToast('Demo data loaded');
+}
+
+function generateDemoData() {
+    const episodes = 600;
+    const rewards = [];
+    const losses = [];
+    let reward = 0;
+
+    for (let i = 0; i < episodes; i++) {
+        reward += (Math.random() - 0.45) * 0.1;
+        reward = Math.max(-1, Math.min(1, reward));
+        rewards.push(reward + Math.random() * 0.05);
+        losses.push(Math.max(0.01, 0.5 - i * 0.0008 + Math.random() * 0.05));
+    }
+
+    const states = [];
+    for (let i = 0; i < 50; i++) {
+        const grid = [];
+        const h = 3 + Math.floor(Math.random() * 5);
+        const w = 3 + Math.floor(Math.random() * 5);
+        for (let y = 0; y < h; y++) {
+            const row = [];
+            for (let x = 0; x < w; x++) {
+                row.push(Math.random() < 0.6 ? 0 : Math.floor(Math.random() * 10));
+            }
+            grid.push(row);
+        }
+        states.push({
+            state_hash: 'state_' + i.toString(16).padStart(4, '0'),
+            grid_json: JSON.stringify(grid),
+            height: h,
+            width: w,
+            unique_colors: new Set(grid.flat()).size,
+            density: grid.flat().filter(c => c > 0).length / (h * w),
+            times_seen: Math.floor(Math.random() * 20) + 1
+        });
+    }
+
+    const transitions = [];
+    for (let i = 0; i < 200; i++) {
+        const from = states[Math.floor(Math.random() * states.length)];
+        const to = states[Math.floor(Math.random() * states.length)];
+        transitions.push({
+            from_hash: from.state_hash,
+            to_hash: to.state_hash,
+            action: Math.floor(Math.random() * 7) + 1,
+            reward: (Math.random() - 0.3) * 0.5,
+            frequency: Math.floor(Math.random() * 10) + 1
+        });
+    }
+
+    const patterns = [
+        { pattern_type: 'cycle', pattern_key: 'cycle_0', frequency: 15, confidence: 0.72,
+          pattern_data: JSON.stringify({actions: [1,3,2,1], length: 4}) },
+        { pattern_type: 'bottleneck', pattern_key: 'state_0a', frequency: 8, confidence: 0.65,
+          pattern_data: JSON.stringify({score: 42, in_degree: 7, out_degree: 6}) },
+        { pattern_type: 'reward_signal', pattern_key: 'state_03_5', frequency: 12, confidence: 0.88,
+          pattern_data: JSON.stringify({action: 5, reward: 0.88}) },
+        { pattern_type: 'important_state', pattern_key: 'state_0f', frequency: 6, confidence: 0.55,
+          pattern_data: JSON.stringify({importance: 0.55}) },
+        { pattern_type: 'cycle', pattern_key: 'cycle_1', frequency: 9, confidence: 0.41,
+          pattern_data: JSON.stringify({actions: [2,6,7], length: 3}) },
+        { pattern_type: 'reward_signal', pattern_key: 'state_12_3', frequency: 7, confidence: 0.73,
+          pattern_data: JSON.stringify({action: 3, reward: 0.73}) },
+    ];
+
+    return {
+        session_id: 'demo_001',
+        games: {
+            'demo_puzzle': {
+                db_summary: {
+                    game_id: 'demo_puzzle',
+                    unique_states: states.length,
+                    total_transitions: transitions.length,
+                    patterns_found: patterns.length,
+                    best_reward: 0.88
+                },
+                graph_summary: {
+                    total_states: states.length,
+                    total_edges: transitions.length,
+                    avg_out_degree: 4.0,
+                    cycles_detected: 2
+                },
+                training_stats: {
+                    total_episodes: episodes,
+                    epsilon: 0.05,
+                    memory_size: 12000,
+                    avg_reward_100: rewards.slice(-100).reduce((a,b)=>a+b,0)/100,
+                    max_reward: Math.max(...rewards),
+                    all_rewards: rewards,
+                    all_losses: losses
+                },
+                patterns: patterns,
+                graph: { states: states, transitions: transitions }
+            }
+        }
+    };
+}
+
+// === Rendering ===
+
+function renderDashboard() {
+    if (!dashboardData || !currentGame) return;
+    const game = dashboardData.games[currentGame];
+    if (!game) return;
+
+    renderStats(game);
+    renderRewardChart(game);
+    renderLossChart(game);
+    renderGraph(game);
+    renderColorPalette();
+    renderColorChart(game);
+    renderPatterns(game);
+    renderGridViewer(game);
+    renderExplorationMap(game);
+}
+
+function renderStats(game) {
+    const db = game.db_summary || {};
+    const ts = game.training_stats || {};
+    const ev = game.evaluation || {};
+
+    document.getElementById('statStates').textContent = (db.unique_states || 0).toLocaleString();
+    document.getElementById('statTransitions').textContent = (db.total_transitions || 0).toLocaleString();
+    document.getElementById('statPatterns').textContent = (db.patterns_found || 0).toLocaleString();
+    document.getElementById('statEpisodes').textContent = (ts.total_episodes || 0).toLocaleString();
+    document.getElementById('statBestReward').textContent = (ts.max_reward || db.best_reward || 0).toFixed(3);
+    document.getElementById('statSolveRate').textContent =
+        ev.solve_rate !== undefined ? (ev.solve_rate * 100).toFixed(1) + '%' : 'N/A';
+}
+
+function renderRewardChart(game) {
+    const canvas = document.getElementById('rewardChart');
+    const ctx = canvas.getContext('2d');
+    canvas.width = canvas.clientWidth * 2;
+    canvas.height = 500;
+    ctx.scale(2, 2);
+
+    const w = canvas.clientWidth;
+    const h = 250;
+    const rewards = game.training_stats?.all_rewards || [];
+    if (rewards.length === 0) return;
+
+    ctx.clearRect(0, 0, w, h);
+
+    // Background
+    ctx.fillStyle = '#0d0d15';
+    ctx.fillRect(0, 0, w, h);
+
+    // Grid lines
+    ctx.strokeStyle = '#1a1a2e';
+    ctx.lineWidth = 0.5;
+    for (let i = 0; i <= 4; i++) {
+        const y = 20 + (h - 40) * i / 4;
+        ctx.beginPath();
+        ctx.moveTo(40, y);
+        ctx.lineTo(w - 10, y);
+        ctx.stroke();
+    }
+
+    const minR = Math.min(...rewards);
+    const maxR = Math.max(...rewards);
+    const range = maxR - minR || 1;
+
+    // Moving average
+    const windowSize = Math.max(1, Math.floor(rewards.length / 20));
+    const avgRewards = [];
+    for (let i = 0; i < rewards.length; i++) {
+        const start = Math.max(0, i - windowSize);
+        const slice = rewards.slice(start, i + 1);
+        avgRewards.push(slice.reduce((a,b) => a+b, 0) / slice.length);
+    }
+
+    // Raw rewards (faded)
+    ctx.strokeStyle = 'rgba(127,219,202,0.15)';
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    rewards.forEach((r, i) => {
+        const x = 40 + (w - 50) * i / rewards.length;
+        const y = 20 + (h - 40) * (1 - (r - minR) / range);
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // Moving average (solid)
+    ctx.strokeStyle = '#7fdbca';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    avgRewards.forEach((r, i) => {
+        const x = 40 + (w - 50) * i / rewards.length;
+        const y = 20 + (h - 40) * (1 - (r - minR) / range);
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // Labels
+    ctx.fillStyle = '#666';
+    ctx.font = '10px Courier New';
+    ctx.textAlign = 'right';
+    for (let i = 0; i <= 4; i++) {
+        const y = 20 + (h - 40) * i / 4;
+        const val = maxR - range * i / 4;
+        ctx.fillText(val.toFixed(2), 36, y + 3);
+    }
+    ctx.textAlign = 'center';
+    ctx.fillText('Episode', w / 2, h - 2);
+}
+
+function renderLossChart(game) {
+    const canvas = document.getElementById('lossChart');
+    const ctx = canvas.getContext('2d');
+    canvas.width = canvas.clientWidth * 2;
+    canvas.height = 500;
+    ctx.scale(2, 2);
+
+    const w = canvas.clientWidth;
+    const h = 250;
+    const losses = game.training_stats?.all_losses || [];
+    if (losses.length === 0) return;
+
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = '#0d0d15';
+    ctx.fillRect(0, 0, w, h);
+
+    const maxL = Math.max(...losses);
+
+    // Grid
+    ctx.strokeStyle = '#1a1a2e';
+    ctx.lineWidth = 0.5;
+    for (let i = 0; i <= 4; i++) {
+        const y = 20 + (h - 40) * i / 4;
+        ctx.beginPath();
+        ctx.moveTo(40, y);
+        ctx.lineTo(w - 10, y);
+        ctx.stroke();
+    }
+
+    // Loss line
+    ctx.strokeStyle = '#ff6b6b';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    const step = Math.max(1, Math.floor(losses.length / (w - 50)));
+    for (let i = 0; i < losses.length; i += step) {
+        const x = 40 + (w - 50) * i / losses.length;
+        const y = 20 + (h - 40) * (losses[i] / maxL);
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // Labels
+    ctx.fillStyle = '#666';
+    ctx.font = '10px Courier New';
+    ctx.textAlign = 'right';
+    for (let i = 0; i <= 4; i++) {
+        const y = 20 + (h - 40) * i / 4;
+        ctx.fillText((maxL * i / 4).toFixed(3), 36, y + 3);
+    }
+}
+
+function renderGraph(game) {
+    const canvas = document.getElementById('graphCanvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = canvas.clientWidth * 2;
+    canvas.height = 700;
+    ctx.scale(2, 2);
+
+    const w = canvas.clientWidth;
+    const h = 350;
+
+    ctx.fillStyle = '#0d0d15';
+    ctx.fillRect(0, 0, w, h);
+
+    const graphData = game.graph || {};
+    const states = graphData.states || [];
+    const transitions = graphData.transitions || [];
+
+    if (states.length === 0) {
+        ctx.fillStyle = '#444';
+        ctx.font = '14px Courier New';
+        ctx.textAlign = 'center';
+        ctx.fillText('No graph data available', w/2, h/2);
+        return;
+    }
+
+    document.getElementById('graphInfo').textContent =
+        `${states.length} nodes, ${transitions.length} edges`;
+
+    // Force-directed layout (simple spring model)
+    const maxNodes = Math.min(states.length, 80);
+    const nodes = states.slice(0, maxNodes).map((s, i) => ({
+        ...s,
+        x: w/2 + (Math.random() - 0.5) * w * 0.6,
+        y: h/2 + (Math.random() - 0.5) * h * 0.6,
+        vx: 0, vy: 0,
+        radius: Math.max(3, Math.min(10, Math.sqrt(s.times_seen || 1) * 2)),
+    }));
+
+    const nodeMap = {};
+    nodes.forEach((n, i) => nodeMap[n.state_hash] = i);
+
+    const edges = transitions.filter(t =>
+        nodeMap[t.from_hash] !== undefined && nodeMap[t.to_hash] !== undefined
+    ).slice(0, 300);
+
+    // Run layout for a few iterations
+    for (let iter = 0; iter < 100; iter++) {
+        // Repulsion
+        for (let i = 0; i < nodes.length; i++) {
+            for (let j = i + 1; j < nodes.length; j++) {
+                const dx = nodes[j].x - nodes[i].x;
+                const dy = nodes[j].y - nodes[i].y;
+                const dist = Math.sqrt(dx*dx + dy*dy) + 0.1;
+                const force = 500 / (dist * dist);
+                nodes[i].vx -= dx / dist * force;
+                nodes[i].vy -= dy / dist * force;
+                nodes[j].vx += dx / dist * force;
+                nodes[j].vy += dy / dist * force;
+            }
+        }
+
+        // Attraction (edges)
+        edges.forEach(e => {
+            const a = nodes[nodeMap[e.from_hash]];
+            const b = nodes[nodeMap[e.to_hash]];
+            if (!a || !b) return;
+            const dx = b.x - a.x;
+            const dy = b.y - a.y;
+            const dist = Math.sqrt(dx*dx + dy*dy) + 0.1;
+            const force = dist * 0.01;
+            a.vx += dx / dist * force;
+            a.vy += dy / dist * force;
+            b.vx -= dx / dist * force;
+            b.vy -= dy / dist * force;
+        });
+
+        // Center gravity
+        nodes.forEach(n => {
+            n.vx += (w/2 - n.x) * 0.001;
+            n.vy += (h/2 - n.y) * 0.001;
+            n.x += n.vx * 0.5;
+            n.y += n.vy * 0.5;
+            n.vx *= 0.9;
+            n.vy *= 0.9;
+            n.x = Math.max(20, Math.min(w - 20, n.x));
+            n.y = Math.max(20, Math.min(h - 20, n.y));
+        });
+    }
+
+    // Draw edges
+    edges.forEach(e => {
+        const a = nodes[nodeMap[e.from_hash]];
+        const b = nodes[nodeMap[e.to_hash]];
+        if (!a || !b) return;
+
+        const r = e.reward > 0 ? Math.min(255, e.reward * 400) : 0;
+        const g = e.reward > 0 ? 100 : 50;
+        const alpha = Math.min(0.6, 0.1 + (e.frequency || 1) * 0.05);
+
+        ctx.strokeStyle = `rgba(${r}, ${g}, 80, ${alpha})`;
+        ctx.lineWidth = Math.min(3, 0.5 + (e.frequency || 1) * 0.3);
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+    });
+
+    // Draw nodes
+    nodes.forEach(n => {
+        const colorIdx = (n.unique_colors || 1) % 10;
+        ctx.fillStyle = ARC_COLORS[colorIdx] || '#7fdbca';
+        ctx.globalAlpha = 0.8;
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, n.radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+    });
+}
+
+function renderColorPalette() {
+    const container = document.getElementById('colorPalette');
+    container.innerHTML = '';
+    ARC_COLORS.forEach((color, i) => {
+        const item = document.createElement('div');
+        item.className = 'legend-item';
+        item.innerHTML = `<div class="legend-swatch" style="background:${color}"></div>${i}: ${ARC_NAMES[i]}`;
+        container.appendChild(item);
+    });
+}
+
+function renderColorChart(game) {
+    const canvas = document.getElementById('colorChart');
+    const ctx = canvas.getContext('2d');
+    canvas.width = canvas.clientWidth * 2;
+    canvas.height = 500;
+    ctx.scale(2, 2);
+
+    const w = canvas.clientWidth;
+    const h = 250;
+
+    ctx.fillStyle = '#0d0d15';
+    ctx.fillRect(0, 0, w, h);
+
+    // Aggregate color counts from all states
+    const colorCounts = new Array(10).fill(0);
+    const states = game.graph?.states || [];
+    states.forEach(s => {
+        try {
+            const grid = JSON.parse(s.grid_json);
+            grid.flat().forEach(c => { if (c >= 0 && c < 10) colorCounts[c]++; });
+        } catch(e) {}
+    });
+
+    const maxCount = Math.max(...colorCounts, 1);
+    const barW = (w - 60) / 10;
+
+    colorCounts.forEach((count, i) => {
+        const barH = (h - 50) * count / maxCount;
+        const x = 40 + i * barW;
+        const y = h - 30 - barH;
+
+        ctx.fillStyle = ARC_COLORS[i];
+        ctx.fillRect(x + 2, y, barW - 4, barH);
+
+        ctx.fillStyle = '#666';
+        ctx.font = '10px Courier New';
+        ctx.textAlign = 'center';
+        ctx.fillText(i.toString(), x + barW/2, h - 18);
+        if (count > 0) {
+            ctx.fillText(count.toLocaleString(), x + barW/2, y - 4);
+        }
+    });
+}
+
+function renderPatterns(game) {
+    const list = document.getElementById('patternList');
+    const patterns = game.patterns || [];
+    document.getElementById('patternCount').textContent = `(${patterns.length})`;
+
+    if (patterns.length === 0) {
+        list.innerHTML = '<div style="color:#444; padding:20px; text-align:center;">No patterns discovered yet</div>';
+        return;
+    }
+
+    list.innerHTML = patterns.map(p => {
+        let detail = '';
+        try {
+            const data = typeof p.pattern_data === 'string' ? JSON.parse(p.pattern_data) : p.pattern_data;
+            if (p.pattern_type === 'cycle') detail = `Actions: [${data.actions?.join(',')}]`;
+            else if (p.pattern_type === 'bottleneck') detail = `Score: ${data.score}`;
+            else if (p.pattern_type === 'reward_signal') detail = `R=${data.reward?.toFixed(2)}`;
+            else if (p.pattern_type === 'important_state') detail = `Imp=${data.importance?.toFixed(3)}`;
+        } catch(e) {}
+
+        return `<div class="pattern-item">
+            <span><span class="pattern-type">${p.pattern_type}</span> ${p.pattern_key} ${detail}</span>
+            <span class="pattern-freq">x${p.frequency} (${(p.confidence*100).toFixed(0)}%)</span>
+        </div>`;
+    }).join('');
+}
+
+function renderGridViewer(game) {
+    gridStates = (game.graph?.states || []).filter(s => s.grid_json);
+    gridIndex = 0;
+    renderCurrentGrid();
+}
+
+function renderCurrentGrid() {
+    const viewer = document.getElementById('gridViewer');
+    const indexEl = document.getElementById('gridIndex');
+
+    if (gridStates.length === 0) {
+        viewer.innerHTML = '<div style="color:#444;">No grids available</div>';
+        indexEl.textContent = '0 / 0';
+        return;
+    }
+
+    indexEl.textContent = `${gridIndex + 1} / ${gridStates.length}`;
+
+    try {
+        const grid = JSON.parse(gridStates[gridIndex].grid_json);
+        const cols = grid[0]?.length || 0;
+
+        let html = `<div class="arc-grid" style="grid-template-columns: repeat(${cols}, 24px);">`;
+        grid.forEach(row => {
+            row.forEach(cell => {
+                html += `<div class="arc-cell arc-color-${cell}"></div>`;
+            });
+        });
+        html += '</div>';
+        html += `<div style="margin-top:8px; color:#666; font-size:11px;">
+            ${grid.length}x${cols} | Hash: ${gridStates[gridIndex].state_hash?.substring(0,8) || '?'}
+            | Visits: ${gridStates[gridIndex].times_seen || 0}
+        </div>`;
+        viewer.innerHTML = html;
+    } catch(e) {
+        viewer.innerHTML = '<div style="color:#ff6b6b;">Error rendering grid</div>';
+    }
+}
+
+function prevGrid() {
+    if (gridStates.length === 0) return;
+    gridIndex = (gridIndex - 1 + gridStates.length) % gridStates.length;
+    renderCurrentGrid();
+}
+
+function nextGrid() {
+    if (gridStates.length === 0) return;
+    gridIndex = (gridIndex + 1) % gridStates.length;
+    renderCurrentGrid();
+}
+
+function renderExplorationMap(game) {
+    const canvas = document.getElementById('explorationMap');
+    const ctx = canvas.getContext('2d');
+    canvas.width = canvas.clientWidth * 2;
+    canvas.height = 400;
+    ctx.scale(2, 2);
+
+    const w = canvas.clientWidth;
+    const h = 200;
+
+    ctx.fillStyle = '#0d0d15';
+    ctx.fillRect(0, 0, w, h);
+
+    const states = game.graph?.states || [];
+    if (states.length === 0) return;
+
+    const maxVisits = Math.max(...states.map(s => s.times_seen || 1));
+    const cols = Math.ceil(Math.sqrt(states.length * 2));
+    const cellW = Math.max(4, (w - 20) / cols);
+    const cellH = Math.max(4, cellW);
+
+    states.forEach((s, i) => {
+        const col = i % cols;
+        const row = Math.floor(i / cols);
+        const x = 10 + col * cellW;
+        const y = 10 + row * cellH;
+
+        if (y + cellH > h) return;
+
+        const intensity = (s.times_seen || 1) / maxVisits;
+        const r = Math.floor(intensity * 200 + 30);
+        const g = Math.floor((1 - intensity) * 100 + 30);
+        const b = Math.floor(intensity * 100 + 80);
+
+        ctx.fillStyle = `rgb(${r},${g},${b})`;
+        ctx.fillRect(x, y, cellW - 1, cellH - 1);
+    });
+
+    ctx.fillStyle = '#666';
+    ctx.font = '10px Courier New';
+    ctx.fillText('Darker = less explored, Brighter = more visited', 10, h - 5);
+}
+
+// === Utilities ===
+
+function showToast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+function exportReport() {
+    if (!dashboardData) { showToast('No data to export'); return; }
+    const blob = new Blob([JSON.stringify(dashboardData, null, 2)], {type: 'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `arc-solver-report-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('Report exported');
+}
+
+// Auto-load demo on page load for easy testing
+window.addEventListener('load', () => {
+    // Check for auto-load param
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('demo') === '1') loadDemo();
+});
+</script>
+</body>
+</html>

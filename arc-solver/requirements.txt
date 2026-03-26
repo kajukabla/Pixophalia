@@ -1,0 +1,20 @@
+# ARC-AGI-3 Puzzle Solver
+# Core SDK
+arc-agi>=0.1.0
+
+# Data & ML
+numpy>=1.24.0
+sqlite3  # stdlib, listed for documentation
+
+# Reinforcement Learning
+torch>=2.0.0
+
+# Visualization & Analysis
+matplotlib>=3.7.0
+networkx>=3.0
+
+# Image processing (pixel color extraction)
+Pillow>=10.0.0
+
+# Utilities
+tqdm>=4.65.0
