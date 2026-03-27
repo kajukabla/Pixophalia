@@ -463,12 +463,46 @@ class Organism:
     parent_id: int = -1
     mutations: list = field(default_factory=list)
 
-    def execute(self, input_grid: list) -> Optional[list]:
-        """Execute this organism's code on an input grid."""
+    def execute(self, input_grid: list, timeout_sec: float = 2.0) -> Optional[list]:
+        """Execute this organism's code on an input grid with timeout."""
+        import signal
+
+        def _timeout_handler(signum, frame):
+            raise TimeoutError("Execution timed out")
+
         try:
-            local_vars = {"input_grid": input_grid, "np": np}
-            exec(self.code, {"__builtins__": {}}, local_vars)
-            return local_vars.get("output_grid", None)
+            safe_builtins = {
+                "len": len, "range": range, "min": min, "max": max,
+                "sum": sum, "abs": abs, "int": int, "float": float,
+                "list": list, "tuple": tuple, "set": set, "dict": dict,
+                "sorted": sorted, "reversed": reversed, "enumerate": enumerate,
+                "zip": zip, "map": map, "filter": filter, "any": any, "all": all,
+                "True": True, "False": False, "None": None,
+                "isinstance": isinstance, "type": type,
+            }
+            # Use a single namespace dict so variables defined in exec
+            # are visible inside list comprehensions (which have their own scope
+            # and only see globals, not locals, in exec).
+            ns = {"__builtins__": safe_builtins, "input_grid": input_grid, "np": np}
+
+            # Set alarm-based timeout
+            old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+            signal.setitimer(signal.ITIMER_REAL, timeout_sec)
+            try:
+                exec(self.code, ns)
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+                signal.signal(signal.SIGALRM, old_handler)
+
+            result = ns.get("output_grid", None)
+            # Validate: must be a list of lists of ints
+            if result is not None:
+                if not isinstance(result, list) or not result:
+                    return None
+                for row in result:
+                    if not isinstance(row, list):
+                        return None
+            return result
         except Exception:
             return None
 
@@ -494,39 +528,150 @@ class CodeEvolution:
 
     def init_population(self, seed_transforms: list = None):
         """Initialize population with diverse transformation templates."""
-        templates = seed_transforms or [
+        templates = seed_transforms or self._default_templates()
+
+        self.population = []
+        for i in range(self.population_size):
+            code = templates[i % len(templates)]
+            self.population.append(Organism(
+                code=code,
+                generation=0,
+            ))
+
+    @staticmethod
+    def _default_templates():
+        return [
+            # --- Basic transforms ---
             # Identity
             "output_grid = [row[:] for row in input_grid]",
-
             # Flip horizontal
             "output_grid = [row[::-1] for row in input_grid]",
-
             # Flip vertical
             "output_grid = input_grid[::-1]",
-
             # Transpose
             "output_grid = [list(row) for row in zip(*input_grid)]",
-
             # Rotate 90
             "output_grid = [list(row) for row in zip(*input_grid[::-1])]",
+            # Rotate 270
+            "output_grid = [list(row) for row in zip(*[r[::-1] for r in input_grid])]",
 
-            # Replace color 0 with color 1
-            "output_grid = [[1 if c == 0 else c for c in row] for row in input_grid]",
-
-            # Fill border with color
+            # --- Color operations ---
+            # Find the non-zero color and fill entire grid with it
             """
 h = len(input_grid)
 w = len(input_grid[0]) if h > 0 else 0
-output_grid = [row[:] for row in input_grid]
-for y in range(h):
-    for x in range(w):
-        if y == 0 or y == h-1 or x == 0 or x == w-1:
-            output_grid[y][x] = 1
+fill_color = 0
+for row in input_grid:
+    for c in row:
+        if c != 0:
+            fill_color = c
+            break
+    if fill_color != 0:
+        break
+output_grid = [[fill_color for _ in range(w)] for _ in range(h)]
+""",
+            # Find most common non-zero color and fill
+            """
+h = len(input_grid)
+w = len(input_grid[0]) if h > 0 else 0
+counts = {}
+for row in input_grid:
+    for c in row:
+        if c != 0:
+            counts[c] = counts.get(c, 0) + 1
+fill_color = max(counts, key=counts.get) if counts else 0
+output_grid = [[fill_color for _ in range(w)] for _ in range(h)]
+""",
+            # Replace background (0) with the non-zero color found
+            """
+h = len(input_grid)
+w = len(input_grid[0]) if h > 0 else 0
+fill_color = 0
+for row in input_grid:
+    for c in row:
+        if c != 0:
+            fill_color = c
+            break
+    if fill_color != 0:
+        break
+output_grid = [[fill_color if c == 0 else c for c in row] for row in input_grid]
+""",
+            # Replace color 0 with 1
+            "output_grid = [[1 if c == 0 else c for c in row] for row in input_grid]",
+            # Invert: non-zero becomes 0, 0 becomes 1
+            "output_grid = [[0 if c != 0 else 1 for c in row] for row in input_grid]",
+
+            # --- Row/column operations ---
+            # Copy first row to all rows
+            """
+first_row = input_grid[0][:]
+output_grid = [first_row[:] for _ in range(len(input_grid))]
+""",
+            # Copy non-zero row pattern to all rows
+            """
+h = len(input_grid)
+w = len(input_grid[0]) if h > 0 else 0
+pattern_row = None
+for row in input_grid:
+    if any(c != 0 for c in row):
+        pattern_row = row[:]
+        break
+if pattern_row is None:
+    pattern_row = input_grid[0][:]
+output_grid = [pattern_row[:] for _ in range(h)]
+""",
+            # Copy non-zero column pattern to all columns
+            """
+h = len(input_grid)
+w = len(input_grid[0]) if h > 0 else 0
+pattern_col = None
+for x in range(w):
+    col = [input_grid[y][x] for y in range(h)]
+    if any(c != 0 for c in col):
+        pattern_col = col[:]
+        break
+if pattern_col is None:
+    pattern_col = [input_grid[y][0] for y in range(h)]
+output_grid = [[pattern_col[y] for _ in range(w)] for y in range(h)]
 """,
 
-            # Double the grid
-            "output_grid = [row + row for row in input_grid] + [row + row for row in input_grid]",
+            # --- Tiling / repeating ---
+            # Tile the non-zero pattern across the grid
+            """
+h = len(input_grid)
+w = len(input_grid[0]) if h > 0 else 0
+non_zero = []
+for y in range(h):
+    for x in range(w):
+        if input_grid[y][x] != 0:
+            non_zero.append((y, x, input_grid[y][x]))
+output_grid = [row[:] for row in input_grid]
+if non_zero:
+    for y in range(h):
+        for x in range(w):
+            for sy, sx, sc in non_zero:
+                if (y - sy) % h == 0 or (x - sx) % w == 0:
+                    pass
+            if output_grid[y][x] == 0:
+                for sy, sx, sc in non_zero:
+                    if x == sx or y == sy:
+                        output_grid[y][x] = sc
+                        break
+""",
 
+            # --- Gravity / movement ---
+            # Gravity down: move non-zero cells to bottom
+            """
+h = len(input_grid)
+w = len(input_grid[0]) if h > 0 else 0
+output_grid = [[0]*w for _ in range(h)]
+for x in range(w):
+    col = [input_grid[y][x] for y in range(h) if input_grid[y][x] != 0]
+    for i, c in enumerate(col):
+        output_grid[h - len(col) + i][x] = c
+""",
+
+            # --- Object operations ---
             # Extract non-zero bounding box
             """
 h = len(input_grid)
@@ -544,35 +689,132 @@ if max_y >= min_y and max_x >= min_x:
 else:
     output_grid = input_grid
 """,
-
-            # Color swap
+            # Fill non-zero bounding box solid
             """
-output_grid = []
-for row in input_grid:
-    new_row = []
-    for c in row:
-        if c == 1: new_row.append(2)
-        elif c == 2: new_row.append(1)
-        else: new_row.append(c)
-    output_grid.append(new_row)
+h = len(input_grid)
+w = len(input_grid[0]) if h > 0 else 0
+min_y, max_y, min_x, max_x = h, 0, w, 0
+fill_c = 0
+for y in range(h):
+    for x in range(w):
+        if input_grid[y][x] != 0:
+            min_y = min(min_y, y)
+            max_y = max(max_y, y)
+            min_x = min(min_x, x)
+            max_x = max(max_x, x)
+            fill_c = input_grid[y][x]
+output_grid = [row[:] for row in input_grid]
+for y in range(min_y, max_y + 1):
+    for x in range(min_x, max_x + 1):
+        output_grid[y][x] = fill_c
 """,
 
-            # Flood fill from corners
+            # --- Border operations ---
+            # Fill border with dominant non-zero color
             """
-import copy as _cp
+h = len(input_grid)
+w = len(input_grid[0]) if h > 0 else 0
+counts = {}
+for row in input_grid:
+    for c in row:
+        if c != 0:
+            counts[c] = counts.get(c, 0) + 1
+fill_c = max(counts, key=counts.get) if counts else 1
+output_grid = [row[:] for row in input_grid]
+for y in range(h):
+    for x in range(w):
+        if y == 0 or y == h-1 or x == 0 or x == w-1:
+            output_grid[y][x] = fill_c
+""",
+
+            # --- Flood fill ---
+            # Flood fill 0s adjacent to non-zero with that color
+            """
+output_grid = [row[:] for row in input_grid]
+h = len(output_grid)
+w = len(output_grid[0]) if h > 0 else 0
+changed = True
+while changed:
+    changed = False
+    for y in range(h):
+        for x in range(w):
+            if output_grid[y][x] == 0:
+                for dy, dx in [(-1,0),(1,0),(0,-1),(0,1)]:
+                    ny, nx = y+dy, x+dx
+                    if 0 <= ny < h and 0 <= nx < w and output_grid[ny][nx] != 0:
+                        output_grid[y][x] = output_grid[ny][nx]
+                        changed = True
+                        break
+""",
+
+            # --- Neighbor painting ---
+            # Paint 4-neighbors of each non-zero cell with that color (cross/plus pattern)
+            """
 output_grid = [row[:] for row in input_grid]
 h = len(output_grid)
 w = len(output_grid[0]) if h > 0 else 0
 for y in range(h):
     for x in range(w):
-        if output_grid[y][x] == 0:
-            neighbors = 0
+        if input_grid[y][x] != 0:
+            c = input_grid[y][x]
             for dy, dx in [(-1,0),(1,0),(0,-1),(0,1)]:
                 ny, nx = y+dy, x+dx
-                if 0 <= ny < h and 0 <= nx < w and output_grid[ny][nx] != 0:
-                    neighbors += 1
-            if neighbors >= 2:
-                output_grid[y][x] = 1
+                if 0 <= ny < h and 0 <= nx < w:
+                    output_grid[ny][nx] = c
+""",
+            # Paint 8-neighbors (square around each non-zero cell)
+            """
+output_grid = [row[:] for row in input_grid]
+h = len(output_grid)
+w = len(output_grid[0]) if h > 0 else 0
+for y in range(h):
+    for x in range(w):
+        if input_grid[y][x] != 0:
+            c = input_grid[y][x]
+            for dy in [-1, 0, 1]:
+                for dx in [-1, 0, 1]:
+                    ny, nx = y+dy, x+dx
+                    if 0 <= ny < h and 0 <= nx < w:
+                        output_grid[ny][nx] = c
+""",
+            # Draw horizontal and vertical lines through each non-zero cell
+            """
+output_grid = [row[:] for row in input_grid]
+h = len(output_grid)
+w = len(output_grid[0]) if h > 0 else 0
+for y in range(h):
+    for x in range(w):
+        if input_grid[y][x] != 0:
+            c = input_grid[y][x]
+            for i in range(w):
+                output_grid[y][i] = c
+            for i in range(h):
+                output_grid[i][x] = c
+""",
+            # Mirror: reflect non-zero cells across center
+            """
+output_grid = [row[:] for row in input_grid]
+h = len(output_grid)
+w = len(output_grid[0]) if h > 0 else 0
+for y in range(h):
+    for x in range(w):
+        if input_grid[y][x] != 0:
+            c = input_grid[y][x]
+            output_grid[h-1-y][x] = c
+            output_grid[y][w-1-x] = c
+            output_grid[h-1-y][w-1-x] = c
+""",
+
+            # --- Scaling ---
+            # Double the grid (2x2 per cell)
+            """
+output_grid = []
+for row in input_grid:
+    new_row = []
+    for c in row:
+        new_row.extend([c, c])
+    output_grid.append(new_row[:])
+    output_grid.append(new_row[:])
 """,
         ]
 
@@ -635,55 +877,106 @@ for y in range(h):
         return correct / total if total > 0 else 0.0
 
     def mutate(self, organism: Organism) -> Organism:
-        """Mutate an organism's code."""
+        """Mutate an organism's code with rich ARC-aware operations."""
         code = organism.code
         mutation_type = random.choice([
             "color_change", "operation_swap", "param_tweak",
-            "line_add", "line_remove", "combine"
+            "line_add", "line_remove", "template_inject",
+            "wrap_loop", "post_transform",
         ])
 
         if mutation_type == "color_change":
-            # Change a color constant
-            for old_c in range(10):
+            import re
+            # Find color comparisons and change the constant
+            patterns = re.findall(r'(==|!=)\s*(\d+)', code)
+            if patterns:
+                op, old_c = random.choice(patterns)
                 new_c = random.randint(0, 9)
-                if str(old_c) in code and old_c != new_c:
-                    code = code.replace(f"== {old_c}", f"== {new_c}", 1)
-                    break
+                code = code.replace(f"{op} {old_c}", f"{op} {new_c}", 1)
 
         elif mutation_type == "operation_swap":
             swaps = [
                 ("[::-1]", "[:]"), ("[:]", "[::-1]"),
                 ("!= 0", "== 0"), ("== 0", "!= 0"),
                 (">= 2", ">= 1"), (">= 1", ">= 3"),
+                ("break", "continue"),
+                ("min_y", "max_y"), ("min_x", "max_x"),
+                ("y == 0", "y == h-1"), ("x == 0", "x == w-1"),
             ]
             old, new = random.choice(swaps)
             if old in code:
                 code = code.replace(old, new, 1)
 
         elif mutation_type == "param_tweak":
-            # Find and tweak numeric constants
             import re
-            nums = re.findall(r'\b(\d+)\b', code)
+            nums = re.findall(r'(?<!=\s)(?<![a-z_])(\d+)(?![a-z_])', code)
             if nums:
                 target = random.choice(nums)
                 new_val = max(0, int(target) + random.randint(-2, 2))
                 code = code.replace(target, str(new_val), 1)
 
         elif mutation_type == "line_add":
-            lines = code.split("\n")
+            # Rich set of ARC-relevant code fragments
             additions = [
                 "output_grid = [row[::-1] for row in output_grid]",
                 "output_grid = output_grid[::-1]",
+                "output_grid = [list(row) for row in zip(*output_grid)]",
+                "output_grid = [list(row) for row in zip(*output_grid[::-1])]",
             ]
-            insert_pos = random.randint(0, len(lines))
+            lines = code.split("\n")
+            # Insert near the end (after output_grid is defined)
+            insert_pos = max(0, len(lines) - 1)
             lines.insert(insert_pos, random.choice(additions))
             code = "\n".join(lines)
 
         elif mutation_type == "line_remove":
-            lines = code.split("\n")
+            lines = [l for l in code.split("\n") if l.strip()]
             if len(lines) > 1:
-                lines.pop(random.randint(0, len(lines) - 1))
+                # Don't remove the line that sets output_grid if it's the only one
+                removable = [i for i, l in enumerate(lines)
+                             if "output_grid" not in l or lines.count("output_grid") > 1]
+                if removable:
+                    lines.pop(random.choice(removable))
                 code = "\n".join(lines)
+
+        elif mutation_type == "template_inject":
+            # Replace the entire organism with a fresh template (+ small mutation)
+            templates = CodeEvolution._default_templates()
+            code = random.choice(templates)
+
+        elif mutation_type == "wrap_loop":
+            # Wrap the output in an iterative refinement
+            wraps = [
+                # Apply transform multiple times
+                "\nfor _iter in range(2):\n    input_grid = output_grid\n" + code,
+            ]
+            code = random.choice(wraps)
+
+        elif mutation_type == "post_transform":
+            # Append a post-processing step
+            posts = [
+                # Replace remaining 0s with most common non-zero
+                """
+_counts = {}
+for _row in output_grid:
+    for _c in _row:
+        if _c != 0:
+            _counts[_c] = _counts.get(_c, 0) + 1
+if _counts:
+    _fill = max(_counts, key=_counts.get)
+    output_grid = [[_fill if c == 0 else c for c in row] for row in output_grid]
+""",
+                # Ensure output same size as input
+                """
+_h = len(input_grid)
+_w = len(input_grid[0]) if _h > 0 else 0
+while len(output_grid) < _h:
+    output_grid.append(output_grid[-1][:])
+output_grid = output_grid[:_h]
+output_grid = [row[:_w] + [0]*max(0,_w-len(row)) for row in output_grid]
+""",
+            ]
+            code = code + "\n" + random.choice(posts)
 
         new_org = Organism(
             code=code,
@@ -737,21 +1030,34 @@ for y in range(h):
                     print(f"    PERFECT SOLUTION at gen {gen+1}!")
                 break
 
-            # Selection: keep top 40%, create rest through mutation/crossover
-            survivors = self.population[:max(2, self.population_size * 2 // 5)]
+            # Selection: keep top 30% as elite, rest through mutation/crossover/injection
+            elite_count = max(2, self.population_size * 3 // 10)
+            survivors = self.population[:elite_count]
             new_population = list(survivors)
 
             while len(new_population) < self.population_size:
-                if random.random() < self.mutation_rate:
+                r = random.random()
+                if r < 0.45:
+                    # Mutate a survivor (primary mechanism)
                     parent = random.choice(survivors)
                     child = self.mutate(parent)
+                elif r < 0.65:
+                    # Crossover: take code from one, post-process with another's logic
+                    if len(survivors) >= 2:
+                        a, b = random.sample(survivors, 2)
+                        # Take the better one's code and mutate
+                        parent = a if a.fitness >= b.fitness else b
+                        child = self.mutate(parent)
+                    else:
+                        child = self.mutate(survivors[0])
+                elif r < 0.85:
+                    # Fresh template injection for diversity
+                    templates = CodeEvolution._default_templates()
+                    child = Organism(code=random.choice(templates), generation=gen)
                 else:
-                    # Re-init from templates for diversity
-                    child = Organism(
-                        code=random.choice(self.population).code,
-                        generation=gen,
-                    )
-                    child = self.mutate(child)
+                    # Double-mutate for bigger jumps
+                    parent = random.choice(survivors)
+                    child = self.mutate(self.mutate(parent))
 
                 new_population.append(child)
 
@@ -780,8 +1086,13 @@ for y in range(h):
             print(f"\n  Solving task with {len(train_pairs)} train, "
                   f"{len(test_pairs)} test pairs")
 
-        # Initialize fresh population
-        self.init_population()
+        # Analyze task to generate targeted seed templates
+        task_seeds = self._analyze_task(train_pairs)
+        if verbose and task_seeds:
+            print(f"  Task analysis generated {len(task_seeds)} targeted seeds")
+
+        # Initialize with both default and task-specific templates
+        self.init_population(seed_transforms=self._default_templates() + task_seeds)
         self.best_fitness = 0.0
         self.best_organism = None
         self.fitness_history = []
@@ -812,3 +1123,183 @@ for y in range(h):
             "train_pairs": len(train_pairs),
             "test_pairs": len(test_pairs),
         }
+
+    def _analyze_task(self, train_pairs: list) -> list:
+        """Analyze training examples to generate task-specific seed templates.
+
+        Looks at structural relationships between inputs and outputs:
+        - Same shape? Different shape?
+        - Row/column repetition patterns?
+        - Color mapping patterns?
+        - Symmetry introduced?
+        """
+        seeds = []
+        if not train_pairs:
+            return seeds
+
+        # Analyze each pair
+        same_shape = all(
+            len(p["input"]) == len(p["output"]) and
+            (not p["input"] or len(p["input"][0]) == len(p["output"][0]))
+            for p in train_pairs
+        )
+
+        # Check if output rows are all identical (row broadcasting)
+        all_rows_same = True
+        for p in train_pairs:
+            out = p["output"]
+            if out and not all(row == out[0] for row in out):
+                all_rows_same = False
+                break
+
+        if all_rows_same and same_shape:
+            # Check if the repeated row matches the input's non-zero row
+            input_has_pattern_row = True
+            for p in train_pairs:
+                inp, out = p["input"], p["output"]
+                target_row = out[0]
+                found = any(row == target_row for row in inp)
+                if not found:
+                    input_has_pattern_row = False
+                    break
+
+            if input_has_pattern_row:
+                # Pattern: copy the non-zero row to all positions
+                seeds.append("""
+h = len(input_grid)
+w = len(input_grid[0]) if h > 0 else 0
+pattern_row = None
+for row in input_grid:
+    if any(c != 0 for c in row):
+        pattern_row = row[:]
+        break
+if pattern_row is None:
+    pattern_row = input_grid[0][:]
+output_grid = [pattern_row[:] for _ in range(h)]
+""")
+                # Also try: copy first row
+                seeds.append("""
+output_grid = [input_grid[0][:] for _ in range(len(input_grid))]
+""")
+                # Copy last row
+                seeds.append("""
+output_grid = [input_grid[-1][:] for _ in range(len(input_grid))]
+""")
+
+        # Check if output columns are all identical (column broadcasting)
+        all_cols_same = True
+        for p in train_pairs:
+            out = p["output"]
+            if out and len(out[0]) > 0:
+                for x in range(len(out[0])):
+                    col_val = out[0][x]
+                    if not all(out[y][x] == col_val for y in range(len(out))):
+                        all_cols_same = False
+                        break
+            if not all_cols_same:
+                break
+
+        if all_cols_same and same_shape:
+            seeds.append("""
+h = len(input_grid)
+w = len(input_grid[0]) if h > 0 else 0
+pattern_col = None
+for x in range(w):
+    col = [input_grid[y][x] for y in range(h)]
+    if any(c != 0 for c in col):
+        pattern_col = col[:]
+        break
+if pattern_col is None:
+    pattern_col = [input_grid[y][0] for y in range(h)]
+output_grid = [[pattern_col[y] for _ in range(w)] for y in range(h)]
+""")
+
+        # Check if output is uniform (all same color)
+        all_uniform = True
+        for p in train_pairs:
+            out = p["output"]
+            flat = [c for row in out for c in row]
+            if len(set(flat)) > 1:
+                all_uniform = False
+                break
+
+        if all_uniform and same_shape:
+            seeds.append("""
+h = len(input_grid)
+w = len(input_grid[0]) if h > 0 else 0
+fill_color = 0
+for row in input_grid:
+    for c in row:
+        if c != 0:
+            fill_color = c
+            break
+    if fill_color != 0:
+        break
+output_grid = [[fill_color for _ in range(w)] for _ in range(h)]
+""")
+
+        # Check for simple color remapping
+        if same_shape:
+            color_maps = []
+            for p in train_pairs:
+                inp, out = p["input"], p["output"]
+                cmap = {}
+                consistent = True
+                for y in range(len(inp)):
+                    for x in range(len(inp[0])):
+                        ic, oc = inp[y][x], out[y][x]
+                        if ic in cmap:
+                            if cmap[ic] != oc:
+                                consistent = False
+                                break
+                        else:
+                            cmap[ic] = oc
+                    if not consistent:
+                        break
+                if consistent:
+                    color_maps.append(cmap)
+
+            if color_maps and all(cm == color_maps[0] for cm in color_maps):
+                cmap = color_maps[0]
+                map_str = repr(cmap)
+                seeds.append(f"""
+_cmap = {map_str}
+output_grid = [[_cmap.get(c, c) for c in row] for row in input_grid]
+""")
+
+        # Check for output = input with 0s replaced
+        if same_shape:
+            zero_replaced = True
+            for p in train_pairs:
+                inp, out = p["input"], p["output"]
+                for y in range(len(inp)):
+                    for x in range(len(inp[0])):
+                        if inp[y][x] != 0 and inp[y][x] != out[y][x]:
+                            zero_replaced = False
+                            break
+                    if not zero_replaced:
+                        break
+                if not zero_replaced:
+                    break
+
+            if zero_replaced:
+                # Output keeps non-zero from input, fills 0s with something
+                seeds.append("""
+output_grid = [row[:] for row in input_grid]
+h = len(output_grid)
+w = len(output_grid[0]) if h > 0 else 0
+changed = True
+while changed:
+    changed = False
+    for y in range(h):
+        for x in range(w):
+            if output_grid[y][x] == 0:
+                for dy, dx in [(-1,0),(1,0),(0,-1),(0,1)]:
+                    ny, nx = y+dy, x+dx
+                    if 0 <= ny < h and 0 <= nx < w and output_grid[ny][nx] != 0:
+                        output_grid[y][x] = output_grid[ny][nx]
+                        changed = True
+                        break
+""")
+
+        return seeds
